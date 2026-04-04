@@ -85,7 +85,7 @@ def _build_config(
 
 
 @mcp.tool()
-def crawl_bestseller_list(
+async def crawl_bestseller_list(
     category_url: str,
     output_dir: str = "raw_html_output",
     max_category_pages: int = 1,
@@ -126,7 +126,9 @@ def crawl_bestseller_list(
         proxy=proxy,
     )
     spider = RawAmazonSpider(config)
-    result = spider.crawl_category_pages()
+    # Run sync Playwright code in a thread pool to avoid
+    # "Playwright Sync API inside asyncio loop" error.
+    result = await asyncio.to_thread(spider.crawl_category_pages)
 
     return {
         "run_id": result["run_id"],

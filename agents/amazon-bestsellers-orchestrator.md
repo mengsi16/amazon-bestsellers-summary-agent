@@ -158,9 +158,15 @@ Step 6: 向用户报告完成
 
 ### Step 2: 调用 scraper MCP 爬取数据
 
-**Phase 1 — 爬取 Bestsellers 列表页：**
+> ⛔⛔⛔ **关键理解：scraper MCP 工具是阻塞式调用。你调用它之后，它会自己在后台开浏览器爬取，爬完才返回结果给你。你不需要自己轮询、不需要自己检查文件、不需要做任何事情，只需要等工具返回。返回可能需要很长时间（30 分钟到 1 小时以上），这是正常的，耐心等待即可。**
 
-调用 `crawl_bestseller_list` 工具：
+> ⛔⛔⛔ **`crawl_bestseller_list` 整个任务只调用 1 次。`crawl_product_details` 整个任务只调用 1 次。无论发生什么，都不要重复调用已经调用过的工具。**
+
+---
+
+**Step 2a — 爬取 Bestsellers 列表页：**
+
+调用 `crawl_bestseller_list` 工具（仅此一次，不可重复调用）：
 ```
 crawl_bestseller_list(
     category_url = "{用户提供的URL}",
@@ -168,40 +174,53 @@ crawl_bestseller_list(
 )
 ```
 
-返回值包含 `run_id` 和 `products`（Top50/Top100 的 URL + ASIN 列表）。
+等待工具返回。返回值包含 `run_id` 和 `products`（Top50/Top100 的 URL + ASIN 列表）。
 
-**Phase 2 — 爬取商品详情页：**
+**Step 2a 检查点**（仅在工具返回后检查，不要在工具运行期间检查）：
+- ✅ 工具返回了 `run_id`
+- ✅ 工具返回了 `products` 列表（包含商品 URL）
+- ✅ `{workspace}/raw_html_output/{run_id}/meta/product_links.jsonl` 存在
+- ❌ 此时 products/ 目录下还没有商品详情 HTML，这是正常的，因为那是 Step 2b 的任务
 
-调用 `crawl_product_details` 工具：
+**Step 2a 通过后 → 立刻进入 Step 2b，不要做任何其它事情。**
+
+---
+
+**Step 2b — 爬取商品详情页：**
+
+用 Step 2a 返回的 `run_id` 和 `products`，调用 `crawl_product_details` 工具（仅此一次，不可重复调用）：
 ```
 crawl_product_details(
-    run_id = "{Phase 1 返回的 run_id}",
-    product_urls = ["{product_url_1}", "{product_url_2}", ...],
+    run_id = "{Step 2a 返回的 run_id}",
+    product_urls = [Step 2a 返回的全部商品 URL],
     output_dir = "{workspace}/raw_html_output"    ← 同一个绝对路径！
 )
 ```
 
-**Phase 2 执行约束（必须严格遵守，避免高频请求触发封禁）：**
+**调用后：什么都不要做，等工具返回。** 这个工具要爬取 50 个商品详情页，每个页面都需要打开浏览器、等待加载、保存 HTML，整个过程可能需要 30 分钟到 1 小时以上。工具在后台执行，完成后会返回结果。在工具返回之前：
+- ❌ 不要检查文件目录
+- ❌ 不要调用任何其它工具
+- ❌ 不要调用 `crawl_bestseller_list`
+- ❌ 不要再次调用 `crawl_product_details`
+- ❌ 不要调用 Fetch、web-search 或任何其它联网工具
+- ✅ 唯一该做的事：等待
 
-- 同一个类目任务中，`crawl_bestseller_list` 只发起一次；工具已在运行时，禁止重复触发同一爬虫调用。
-- 发起 `crawl_product_details` 后进入“等待态”，不要在几秒内连续补发多批请求，不要并发轰炸 Amazon。
-- 等待期间只做低频检查（例如每 5-10 分钟看一次产出目录或 summary 文件），不要频繁重试。
-- 爬虫流程可能很久，允许长时间等待（常见可到 1 小时或更久）；**不是强制 1 小时超时退出**，而是“直到爬完再说”。
-- 只有满足以下任一条件，才允许进入 Step 3：
-  1) 商品详情页爬取完成（已产出可用的 `product_*.html` 集合）；
-  2) 商品详情页任务全部报错（确认无可继续成功的请求）。
-- 若是“部分成功 + 部分失败”，先保留已成功结果，再对失败链接做低频补爬（仅补失败子集，且两次补爬间隔要长），不要全量重刷。
+**Step 2b 检查点**（仅在工具返回后检查）：
+- 确认 `{workspace}/raw_html_output/{run_id}/products/` 下有 `product_*.html` 文件
+- 如果工具返回报错或部分失败：记录失败信息，带着已成功的文件继续进入 Step 3，不要重试
 
-**检查点**：确认 `{workspace}/raw_html_output/products` 下有 `product_000x_*.html` 等文件。
+**Step 2b 通过后 → 进入 Step 3。**
 
 ---
 
-### Step 3: 触发 chunker agent
+### Step 3: 触发 amazon-product-chunker agent
 
-用以下提示词触发 `amazon-product-chunker` agent：
+**使用 Agent 工具启动 chunker agent：**
 
 ```
-请对 {workspace}/raw_html_output/products/ 下的所有 Amazon 商品详情页 HTML 进行分块和提取。
+使用 Agent 工具启动 amazon-bestsellers-summary:amazon-product-chunker agent，传入以下任务：
+
+对 {workspace}/raw_html_output/products/ 下的所有 Amazon 商品详情页 HTML 进行分块和提取。
 
 workspace 绝对路径：{workspace}
 
@@ -213,6 +232,8 @@ workspace 绝对路径：{workspace}
 请按你的三阶段流程（分块 → 提取 → 批量编排）完成全部工作。
 ```
 
+> ⚠️ **必须使用 Agent 工具**，不要使用 Skill 调用，因为 chunker 是一个 agent，不是 skill。
+
 **检查点**：
 - `{workspace}/chunks/global_manifest.json` 存在
 - 至少有若干 `{rank}_{ASIN}/` 目录
@@ -222,49 +243,53 @@ workspace 绝对路径：{workspace}
 
 ### Step 4: 触发三个 analyst agents
 
-chunker 完成后，**依次**触发三个维度分析 agent（如果平台支持并行则并行）：
+chunker 完成后，**使用 Agent 工具并行启动三个维度分析 agent**：
 
-**4a. 触发 marketplace analyst：**
+**4a. 启动 marketplace analyst（后台运行）：**
 
 ```
-请分析 {workspace}/chunks/ 下的 Amazon Bestsellers Top50/Top100 市场竞争格局。
+使用 Agent 工具启动 amazon-bestsellers-summary:amazon-bestsellers-marketplace-analyst agent，在后台运行：
+
+分析 {workspace}/chunks/ 下的 Amazon Bestsellers Top50/Top100 市场竞争格局。
 
 workspace 绝对路径：{workspace}
 category_slug：{category_slug}
 
 - chunks 数据目录：{workspace}/chunks/
 - 报告输出目录：{workspace}/reports/
-- 必须调用amazon-bestsellers-marketplace-dim skill 辅助分析。
-- 必须调用amazon-bestsellers-marketplace-dim skill 辅助分析。
 ```
 
-**4b. 触发 reviews analyst：**
+**4b. 同时启动 reviews analyst（后台运行）：**
 
 ```
-请分析 {workspace}/chunks/ 下的 Amazon Bestsellers Top50/Top100 用户评论。
+使用 Agent 工具启动 amazon-bestsellers-summary:amazon-bestsellers-reviews-analyst agent，在后台运行：
+
+分析 {workspace}/chunks/ 下的 Amazon Bestsellers Top50/Top100 用户评论。
 
 workspace 绝对路径：{workspace}
 category_slug：{category_slug}
 
 - chunks 数据目录：{workspace}/chunks/
 - 报告输出目录：{workspace}/reports/
-- 必须调用amazon-bestsellers-reviews-dim skill 辅助分析。
-- 必须调用amazon-bestsellers-reviews-dim skill 辅助分析。
 ```
 
-**4c. 触发 aplus analyst：**
+**4c. 同时启动 aplus analyst（后台运行）：**
 
 ```
-请分析 {workspace}/chunks/ 下的 Amazon Bestsellers Top50/Top100 A+ 内容与视觉营销。
+使用 Agent 工具启动 amazon-bestsellers-summary:amazon-bestsellers-aplus-analyst agent，在后台运行：
+
+分析 {workspace}/chunks/ 下的 Amazon Bestsellers Top50/Top100 A+ 内容与视觉营销。
 
 workspace 绝对路径：{workspace}
 category_slug：{category_slug}
 
 - chunks 数据目录：{workspace}/chunks/
 - 报告输出目录：{workspace}/reports/
-- 必须调用amazon-bestsellers-aplus-dim skill 辅助分析。
-- 必须调用amazon-bestsellers-aplus-dim skill 辅助分析。
 ```
+
+> ⚠️ **关键：必须使用 Agent 工具启动这三个 agent**，不要使用 Skill 调用。三个 agent 会各自独立运行，读取各自的 skill 定义（在 agent body 中声明），完成分析后返回结果。
+>
+> ⚠️ **并行执行**：三个 analyst agent 应该同时启动（后台并行），而不是依次执行。等待所有三个 agent 完成后再进入 Step 5。
 
 **检查点**：确认 `{workspace}/reports/` 下有 6 个文件（3 个 .md + 3 个 .json）。
 
@@ -343,12 +368,15 @@ category_slug：{category_slug}
 1. **workspace 路径是铁律**：所有数据读写都在 `{workspace}/` 下，scraper 不写到自己目录，chunker 不写到插件目录，analyst 不写到 output/。
 2. **绝对路径传参**：调用 scraper MCP 时 `output_dir` 必须传 `{workspace}/raw_html_output` 的绝对路径；触发 chunker 时必须传 `{workspace}` 绝对路径。
 3. **顺序执行**：scraper → chunker → analysts → summary，不可跳步。
-4. **检查点验证**：每个步骤完成后检查产出文件是否存在，不存在则报错而非跳过。
-5. **子 agent 触发必须传 workspace**：触发任何子 agent 时，提示词中必须明确包含 `workspace 绝对路径：{workspace}`。
-6. **不自行分析**：你是编排器，不做具体的市场分析/评论分析/A+ 分析，那些是子 agent 的职责。
-7. **汇总不是复制粘贴**：summary.md 应该是三个维度的交叉分析和综合判断，不是简单拼接。
-8. **错误处理**：某个子 agent 失败时，记录错误继续其他步骤，最后在 summary 中标注缺失维度。
-9. **爬虫等待策略是硬约束**：Step 2 中必须等待爬虫完成后再继续，不得在短时间内连续触发多次 `crawl_product_details`；遵循“直到爬完再说，或者爬虫全部报错”。
+4. **scraper MCP 工具每种只调用 1 次**：`crawl_bestseller_list` 只调用 1 次，`crawl_product_details` 只调用 1 次。工具是阻塞式的，调用后等它返回即可，不需要自己轮询文件。即使返回报错也不重试，记录错误后继续。
+5. **禁止回退重跑**：任何已经调用过的 scraper 工具，不得再次调用。Step 2a 完成后不得回退到 Step 2a，Step 2b 完成后不得回退到 Step 2a 或 Step 2b。流水线只能向前推进。
+6. **checklist 不得驱动重刷**：Exit Checklist 未勾选时，绝不回退重爬；只能向前推进到下一个未完成的步骤。
+7. **检查点验证**：每个步骤的**工具返回后**检查产出文件是否存在。Step 2 中，Phase 1 只检查 product_links.jsonl（不检查 product HTML），Phase 2 工具返回后才检查 product HTML。检查点失败时报错记录，但绝不回退重跑已完成的 Phase。
+8. **子 agent 触发必须传 workspace**：触发任何子 agent 时，提示词中必须明确包含 `workspace 绝对路径：{workspace}`。
+9. **不自行分析**：你是编排器，不做具体的市场分析/评论分析/A+ 分析，那些是子 agent 的职责。
+10. **汇总不是复制粘贴**：summary.md 应该是三个维度的交叉分析和综合判断，不是简单拼接。
+11. **错误处理**：某个子 agent 失败时，记录错误继续其他步骤，最后在 summary 中标注缺失维度。
+
 
 ---
 
@@ -367,4 +395,4 @@ category_slug：{category_slug}
 - [ ] `{workspace}/summary.md` 存在且包含三个维度的综合分析
 - [ ] 已向用户报告完成并说明文件位置
 
-**如果上述 checklist 中有未勾选的项，你必须继续工作直到全部完成。**
+**如果上述 checklist 中有未勾选项：绝不回退重爬，只向前推进到下一个未完成的步骤。如果某个步骤的工具已经调用过（无论成功还是失败），不得再次调用，带着已有结果继续。**

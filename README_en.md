@@ -117,41 +117,28 @@ amazon-bestsellers-summary/
 
 ## Installation & Usage
 
-### Method 1: Local Path Installation (Recommended)
+### Method: Launch Orchestrator as Main Session (Supports Multi-Agent Orchestration)
 
-1. **Clone or download this project**
-
-2. **Install Python dependencies**
-```bash
-cd amazon-bestsellers-summary/scraper
-pip install -r requirements.txt
-```
-
-3. **Add local marketplace in Claude Code**
-```bash
-/plugin marketplace add ./amazon-bestsellers-summary
-```
-
-4. **Install the plugin**
-```bash
-/plugin install amazon-bestsellers-summary@amazon-bestsellers-summary
-```
-
-### Method 2: Direct Plugin Directory
+> **Important**: Claude Code subagents cannot nest and spawn other subagents. To allow the orchestrator to dispatch child agents (chunker + three analysts), it must be launched as a **main session**:
 
 ```bash
-claude --plugin-dir ./amazon-bestsellers-summary
+claude --plugin-dir /your/path/to/amazon-bestsellers-summary --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
 ```
+
+Parameter explanation:
+- `--plugin-dir` → Points to the plugin root directory (the directory containing `.claude-plugin/plugin.json`)
+- `--agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator` → Format is `plugin-name:agent-name`, where plugin-name comes from the `name` field in `plugin.json`
+- `--dangerously-skip-permissions` → Skips permission checks, allowing the main session to call all tools (! Required, otherwise Agents will not be created to work)
 
 ### Usage Example
 
-After installation, enter in Claude Code:
+**After Method 1 startup**, enter in Claude Code:
 
 ```
 Please generate an overall report for the womens-hoodies subcategory
 ```
 
-Or:
+**After Method 2 startup**, orchestrator is already running as main session, just enter your task:
 
 ```
 Analyze the Bestsellers Top50 for this category:
@@ -160,9 +147,9 @@ https://www.amazon.com/gp/bestsellers/fashion/1040658/
 
 The plugin will automatically:
 1. Call MCP Server to crawl Top50 product data
-2. Chunk and extract structured data
-3. Perform three-dimensional analysis (marketplace/reviews/A+ content)
-4. Generate summary report
+2. Spawn chunker agent for chunking and extraction
+3. Parallel spawn three analyst agents for dimensional analysis
+4. Generate consolidated summary report
 
 ---
 

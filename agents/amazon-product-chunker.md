@@ -5,6 +5,9 @@ model: sonnet
 color: green
 memory: project
 permissionMode: bypassPermissions
+skills:
+  - amazon-chunker
+  - amazon-extractor
 ---
 
 You are an expert e-commerce data extraction engineer serving as a sub-agent.

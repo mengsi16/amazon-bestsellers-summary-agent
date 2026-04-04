@@ -117,41 +117,28 @@ amazon-bestsellers-summary/
 
 ## 安装与使用
 
-### 方式一：本地路径安装（推荐）
+### 方式：作为主会话启动 Orchestrator（支持多 Agent 调度）
 
-1. **克隆或下载本项目**
-
-2. **安装 Python 依赖**
-```bash
-cd amazon-bestsellers-summary/scraper
-pip install -r requirements.txt
-```
-
-3. **在 Claude Code 中添加本地 marketplace**
-```bash
-/plugin marketplace add ./amazon-bestsellers-summary
-```
-
-4. **安装插件**
-```bash
-/plugin install amazon-bestsellers-summary@amazon-bestsellers-summary
-```
-
-### 方式二：直接指定插件目录
+> **重要**：Claude Code 的 subagent 无法嵌套 spawn 其他 subagent。要让 orchestrator 调度子 agent（chunker + 三个 analyst），必须将其作为**主会话**启动：
 
 ```bash
-claude --plugin-dir ./amazon-bestsellers-summary
+claude --plugin-dir /your/path/to/amazon-bestsellers-summary --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
 ```
+
+参数说明：
+- `--plugin-dir` → 指向插件根目录（包含 `.claude-plugin/plugin.json` 的目录）
+- `--agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator` → 格式为 `plugin-name:agent-name`，plugin-name 来自 `plugin.json` 中的 `name` 字段
+- `--dangerously-skip-permissions` → 跳过权限检查，允许主会话调用所有工具（！必须要有，否则不会创建Agent进行工作）
 
 ### 使用示例
 
-安装完成后，在 Claude Code 中输入：
+**方式一启动后**，在 Claude Code 中输入：
 
 ```
 请你帮我生成一份 womens-hoodies 细分类目的整体报告
 ```
 
-或：
+**方式二启动后**，orchestrator 已作为主会话运行，直接输入任务即可：
 
 ```
 分析这个类目的 Bestsellers Top50：
@@ -160,9 +147,9 @@ https://www.amazon.com/gp/bestsellers/fashion/1040658/
 
 插件将自动：
 1. 调用 MCP Server 爬取 Top50 产品数据
-2. 分块提取并结构化存储
-3. 三维度分析（市场竞争/用户评论/A+内容）
-4. 生成汇总报告
+2. Spawn chunker agent 进行分块提取
+3. 并行 Spawn 三个 analyst agent 进行维度分析
+4. 汇总生成 summary 报告
 
 ---
 

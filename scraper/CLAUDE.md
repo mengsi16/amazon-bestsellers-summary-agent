@@ -391,3 +391,89 @@ Amazon 的详情页虽然整体很复杂，但很多大块内容其实已经由 
 - 静态层只做保真和轻清洗，复杂整理交给后续 LLM
 
 这也是当前 `chunker/static_chunker.py` 的默认设计原则。
+
+---
+
+## 问题4：MCP 工具调用时 Playwright Sync API 与 asyncio event loop 冲突
+
+### 问题描述
+
+当通过 MCP（Model Context Protocol）调用 `crawl_bestseller_list` 工具时，爬虫崩溃并报错：
+
+```
+Error: It looks like you are using Playwright Sync API inside the asyncio loop.
+Please use the Async API instead.
+```
+
+**现象对比**：
+
+| 调用方式 | 结果 |
+|----------|------|
+| 命令行直接运行 `python raw_amazon_spider.py` | ✅ 成功，发现 52 个商品 |
+| MCP stdio 调用 `crawl_bestseller_list` 工具 | ❌ 失败，0 个商品，4 次 fetch 全部报错 |
+
+### 根因分析
+
+1. **FastMCP 框架运行在 asyncio 事件循环中**：所有 `@mcp.tool()` 装饰的函数都在 asyncio loop 内被调用
+2. **`crawl_bestseller_list` 定义为同步函数**：`def crawl_bestseller_list(...)` 
+3. **内部调用同步 Playwright API**：`spider.crawl_category_pages()` → `_fetch_with_fallback()` → `StealthyFetcher.fetch()` 使用的是 Playwright 的同步 API
+4. **Playwright 禁止在 asyncio loop 中使用同步 API**：会抛出上述错误
+
+**调用链**：
+```
+FastMCP (asyncio loop)
+  → crawl_bestseller_list (sync def)
+    → spider.crawl_category_pages() (sync)
+      → StealthyFetcher.fetch() (sync Playwright)
+        → ❌ Error: sync Playwright inside asyncio loop
+```
+
+### 解决方案
+
+将 `crawl_bestseller_list` 改为异步函数，并用 `asyncio.to_thread()` 将同步 Playwright 调用隔离到线程池：
+
+**修改文件**：`scraper/mcp_server.py`
+
+```python
+# 修改前
+@mcp.tool()
+def crawl_bestseller_list(...) -> dict[str, Any]:
+    ...
+    result = spider.crawl_category_pages()
+
+# 修改后
+@mcp.tool()
+async def crawl_bestseller_list(...) -> dict[str, Any]:
+    ...
+    # Run sync Playwright code in a thread pool to avoid
+    # "Playwright Sync API inside asyncio loop" error.
+    result = await asyncio.to_thread(spider.crawl_category_pages)
+```
+
+**关键改动**：
+1. `def` → `async def`：让函数在 asyncio 上下文中正确执行
+2. `spider.crawl_category_pages()` → `await asyncio.to_thread(spider.crawl_category_pages)`：将同步 Playwright 代码扔到独立线程执行，与主 asyncio loop 隔离
+
+### 验证结果
+
+修复后再次通过 MCP stdio 调用：
+
+```
+✅ category_001_*.html — 类目页 HTML 已保存
+✅ product_links.jsonl — 商品链接已发现
+✅ requests.jsonl — 请求日志正常
+✅ xhr/*.jsonl — XHR 捕获正常
+```
+
+### 为什么 `crawl_product_details` 没有这个问题？
+
+`crawl_product_details` 使用的是 `AsyncStealthySession`（异步 Playwright），本身就是异步实现，与 FastMCP 的 asyncio loop 兼容。
+
+### 经验总结
+
+1. **MCP 工具函数默认运行在 asyncio 环境**：即使定义为 `def`，也会被 FastMCP 在 asyncio loop 中调用
+2. **同步 Playwright 不能在 asyncio loop 中使用**：这是 Playwright 的设计约束
+3. **解决方案**：
+   - 方案 A：改用异步 Playwright（如 `AsyncStealthySession`）
+   - 方案 B：用 `asyncio.to_thread()` 将同步调用隔离到线程池（本次采用）
+4. **`asyncio.to_thread()` 的作用**：将同步函数扔到独立的线程池执行，避免阻塞主 asyncio loop，同时解决 Playwright sync/async 冲突
