@@ -1,4 +1,4 @@
-playwright==1.47.0
+playwright==1.58.0
 scrapling[fetchers]==0.4.3
 python-dotenv==1.0.1
 mcp>=1.0.0
