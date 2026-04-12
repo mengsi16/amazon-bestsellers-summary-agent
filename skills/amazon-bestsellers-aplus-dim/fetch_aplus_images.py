@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
 """
-A+ Image Fetcher — 从 batch-run 产出目录下载 Top N 产品的 A+ 图片。
+A+ Image Fetcher — 纯下载工具，接收模型构造的下载计划（JSON），执行图片下载。
 
 Usage:
-    python fetch_aplus_images.py --chunks-dir <out_dir> [--top-n 5] [--output-dir <path>]
+    python fetch_aplus_images.py --download-plan plan.json
 
-功能：
-1. 读取 global_manifest.json（或按 {rank}_{ASIN} 目录名排序）定位 Top N 产品
-2. 从每个产品的 aplus/extract/aplus_extracted.md 解析 Image Assets 表格，提取图片 URL
-3. 如 extracted md 无结果，从 aplus/raw/aplus.html 备用提取
-4. 下载图片到 <output-dir>/<rank>_<ASIN>/ 目录
-5. 生成 download_manifest.json 记录下载结果
+设计原则（单一职责）：
+  - 路径解析（读 global_manifest.json、定位产品目录）→ 模型负责
+  - URL 提取（从 aplus_extracted.md / aplus.html 中提取图片 URL）→ 模型负责
+  - 图片下载（给定 URL 列表 + 输出目录，下载到本地）→ 本工具负责
 
-目录结构约定（batch-run 产出）：
-    out_dir/{rank}_{ASIN}/aplus/raw/aplus.html
-    out_dir/{rank}_{ASIN}/aplus/extract/aplus_extracted.md
-    out_dir/global_manifest.json
+plan.json 格式：
+{
+    "output_dir": "/absolute/path/to/aplus_images",
+    "products": [
+        {
+            "dir_name": "001_B0XXXXX",
+            "urls": [
+                "https://m.media-amazon.com/images/S/aplus-media/...",
+                "https://m.media-amazon.com/images/S/aplus-media/..."
+            ]
+        }
+    ]
+}
+
+产出：
+  - 图片文件：{output_dir}/{dir_name}/aplus_img_001.jpg ...
+  - 下载清单：{output_dir}/download_manifest.json
 """
 
 import argparse
@@ -29,64 +40,30 @@ import ssl
 from pathlib import Path
 
 
-def parse_aplus_image_urls(aplus_md_path: Path) -> list[str]:
-    """从 aplus_extracted.md 中解析 Image Assets 表格，提取图片 URL。"""
-    if not aplus_md_path.exists():
-        return []
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
 
-    text = aplus_md_path.read_text(encoding="utf-8")
-    urls: list[str] = []
-
-    in_image_section = False
-    for line in text.splitlines():
-        stripped = line.strip()
-
-        if stripped.startswith("## Image Assets"):
-            in_image_section = True
-            continue
-
-        if in_image_section and stripped.startswith("## "):
-            break
-
-        if in_image_section and stripped.startswith("|"):
-            # 跳过表头和分隔行
-            if "---" in stripped or "Alt" in stripped and "Src" in stripped:
-                continue
-            # 提取 URL（表格第二列）
-            cols = [c.strip() for c in stripped.split("|")]
-            for col in cols:
-                if col.startswith("http"):
-                    urls.append(col)
-
-    return urls
+def url_to_filename(url: str, index: int) -> str:
+    """从 URL 生成文件名。"""
+    path_part = url.split("?")[0]
+    if "." in path_part.split("/")[-1]:
+        ext = "." + path_part.split("/")[-1].rsplit(".", 1)[-1]
+        ext = re.sub(r"\._[A-Z]+[\d,]+_", "", ext)
+        if not ext or ext == ".":
+            ext = ".jpg"
+    else:
+        ext = ".jpg"
+    return f"aplus_img_{index:03d}{ext}"
 
 
-def parse_aplus_html_image_urls(aplus_html_path: Path) -> list[str]:
-    """从 aplus.html 中用正则提取所有 A+ 图片 URL（备用方案）。"""
-    if not aplus_html_path.exists():
-        return []
-
-    html = aplus_html_path.read_text(encoding="utf-8")
-    urls: list[str] = []
-
-    # 匹配 data-src 和 src 中的 media-amazon 图片 URL
-    patterns = [
-        r'data-src="(https://m\.media-amazon\.com/images/S/aplus-media[^"]+)"',
-        r'src="(https://m\.media-amazon\.com/images/S/aplus-media[^"]+)"',
-    ]
-    for pattern in patterns:
-        for match in re.finditer(pattern, html):
-            url = match.group(1)
-            if url not in urls:
-                urls.append(url)
-
-    return urls
-
+# ---------------------------------------------------------------------------
+# I/O: single image download
+# ---------------------------------------------------------------------------
 
 def download_image(url: str, save_path: Path, timeout: int = 30) -> bool:
     """下载单张图片，返回是否成功。"""
     try:
-        # 创建不验证 SSL 的上下文（某些环境下 Amazon CDN 证书可能有问题）
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -112,142 +89,70 @@ def download_image(url: str, save_path: Path, timeout: int = 30) -> bool:
         return False
 
 
-def parse_rank_asin(dir_name: str) -> tuple[str, str]:
-    """从目录名 '{rank}_{ASIN}' 中提取 rank 和 ASIN。
+# ---------------------------------------------------------------------------
+# Plan loading & validation (fail-fast)
+# ---------------------------------------------------------------------------
 
-    例如 '001_B0XXXXX' -> ('001', 'B0XXXXX')
+def load_download_plan(plan_path: Path) -> dict:
+    """读取并校验下载计划 JSON，校验失败立即抛异常（fail-fast）。"""
+    if not plan_path.exists():
+        raise FileNotFoundError(f"Plan file not found: {plan_path}")
+
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+
+    if "output_dir" not in plan or not plan["output_dir"]:
+        raise ValueError("Plan JSON missing required field: 'output_dir'")
+    if "products" not in plan or not plan["products"]:
+        raise ValueError("Plan JSON missing or empty required field: 'products'")
+
+    for i, prod in enumerate(plan["products"]):
+        if "dir_name" not in prod or not prod["dir_name"]:
+            raise ValueError(
+                f"Product #{i} missing required field: 'dir_name'"
+            )
+        if "urls" not in prod:
+            raise ValueError(
+                f"Product #{i} (dir_name={prod.get('dir_name','?')}) missing required field: 'urls'"
+            )
+
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# Core execution
+# ---------------------------------------------------------------------------
+
+def execute_download_plan(plan: dict) -> dict:
+    """执行下载计划，返回并持久化 download_manifest。
+
+    Args:
+        plan: 已校验的下载计划 dict（来自 load_download_plan）。
+
+    Returns:
+        download_manifest dict（同时写入 {output_dir}/download_manifest.json）。
     """
-    parts = dir_name.split("_", 1)
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    return "", dir_name
-
-
-def get_product_dirs(chunks_dir: Path, top_n: int) -> list[Path]:
-    """获取 batch-run 产出目录下前 N 个产品子目录。
-
-    优先读取 global_manifest.json（排名已排序），
-    Fallback 按 {rank}_{ASIN} 目录名字典序排序。
-    """
-    # 优先读取 global_manifest.json
-    manifest_path = chunks_dir / "global_manifest.json"
-    if manifest_path.exists():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if "products" in manifest:
-                dirs = []
-                for p in manifest["products"][:top_n]:
-                    dir_name = p.get("dir", "")
-                    if not dir_name:
-                        # 兼容：从 rank + asin 拼接
-                        rank = p.get("rank", "")
-                        asin = p.get("asin", "")
-                        dir_name = f"{rank}_{asin}" if rank and asin else ""
-                    if dir_name:
-                        d = chunks_dir / dir_name
-                        if d.is_dir():
-                            dirs.append(d)
-                if dirs:
-                    return dirs
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-    # Fallback：按目录名排序（{rank}_{ASIN} 格式自然按 rank 升序）
-    all_dirs = sorted(
-        [d for d in chunks_dir.iterdir() if d.is_dir()],
-        key=lambda p: p.name,
-    )
-    return all_dirs[:top_n]
-
-
-def url_to_filename(url: str, index: int) -> str:
-    """从 URL 生成文件名。"""
-    # 提取文件扩展名
-    path_part = url.split("?")[0]
-    if "." in path_part.split("/")[-1]:
-        ext = "." + path_part.split("/")[-1].rsplit(".", 1)[-1]
-        # 清理 Amazon 的尺寸后缀，如 ._SR970,300_.jpg
-        ext = re.sub(r"\._[A-Z]+[\d,]+_", "", ext)
-        if not ext or ext == ".":
-            ext = ".jpg"
-    else:
-        ext = ".jpg"
-
-    return f"aplus_img_{index:03d}{ext}"
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Download A+ images for Top N products from Chunks directory"
-    )
-    parser.add_argument(
-        "--chunks-dir",
-        type=Path,
-        required=True,
-        help="Path to the Chunks directory (e.g., Amazon-Bestsellers-Scraper/Chunks)",
-    )
-    parser.add_argument(
-        "--top-n",
-        type=int,
-        default=5,
-        help="Number of top products to download images for (default: 5)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help="Output directory for downloaded images (default: <chunks-dir>/../aplus_images)",
-    )
-    args = parser.parse_args()
-
-    chunks_dir = args.chunks_dir.resolve()
-    if not chunks_dir.is_dir():
-        print(f"Error: Chunks directory not found: {chunks_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    output_dir = args.output_dir or (chunks_dir.parent / "aplus_images")
-    output_dir = output_dir.resolve()
+    output_dir = Path(plan["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    product_dirs = get_product_dirs(chunks_dir, args.top_n)
-    if not product_dirs:
-        print("Error: No product directories found.", file=sys.stderr)
-        sys.exit(1)
+    products_results: list[dict] = []
 
-    print(f"Found {len(product_dirs)} product(s) to process:")
-    for d in product_dirs:
-        print(f"  - {d.name}")
-
-    manifest_results: list[dict] = []
-
-    for idx, prod_dir in enumerate(product_dirs, start=1):
-        rank_str, asin = parse_rank_asin(prod_dir.name)
-        display_name = prod_dir.name  # e.g. '001_B0XXXXX'
-        print(f"\n[{idx}/{len(product_dirs)}] Processing {display_name}...")
-
-        # 新目录结构：{rank}_{ASIN}/aplus/extract/ 和 {rank}_{ASIN}/aplus/raw/
-        aplus_md = prod_dir / "aplus" / "extract" / "aplus_extracted.md"
-        aplus_html = prod_dir / "aplus" / "raw" / "aplus.html"
-
-        urls = parse_aplus_image_urls(aplus_md)
-        if not urls:
-            urls = parse_aplus_html_image_urls(aplus_html)
+    for prod in plan["products"]:
+        dir_name = prod["dir_name"]
+        urls = prod["urls"]
 
         if not urls:
-            print(f"  No A+ images found for {display_name}")
-            manifest_results.append({
-                "rank": rank_str or str(idx),
-                "asin": asin,
-                "dir": display_name,
+            products_results.append({
+                "dir_name": dir_name,
                 "status": "NO_IMAGES",
                 "image_count": 0,
+                "success_count": 0,
                 "images": [],
             })
             continue
 
-        print(f"  Found {len(urls)} image URL(s)")
+        print(f"  [{dir_name}] Downloading {len(urls)} image(s)...")
 
-        product_output = output_dir / display_name
+        product_output = output_dir / dir_name
         product_output.mkdir(parents=True, exist_ok=True)
 
         images_info: list[dict] = []
@@ -256,7 +161,7 @@ def main():
         for img_idx, url in enumerate(urls, start=1):
             filename = url_to_filename(url, img_idx)
             save_path = product_output / filename
-            print(f"  Downloading [{img_idx}/{len(urls)}]: {filename}...")
+            print(f"    [{img_idx}/{len(urls)}] {filename}")
 
             ok = download_image(url, save_path)
             images_info.append({
@@ -269,39 +174,87 @@ def main():
             if ok:
                 success_count += 1
 
-            # 礼貌间隔，避免被封
-            time.sleep(0.3)
+            if img_idx < len(urls):
+                time.sleep(0.3)
 
-        manifest_results.append({
-            "rank": rank_str or str(idx),
-            "asin": asin,
-            "dir": display_name,
-            "status": "SUCCESS" if success_count > 0 else "ALL_FAILED",
+        if success_count == len(urls):
+            status = "SUCCESS"
+        elif success_count > 0:
+            status = "PARTIAL"
+        else:
+            status = "ALL_FAILED"
+
+        products_results.append({
+            "dir_name": dir_name,
+            "status": status,
             "image_count": len(urls),
             "success_count": success_count,
             "images": images_info,
         })
 
-    # 写入下载清单
+    manifest = build_download_manifest(
+        output_dir=str(output_dir),
+        products_results=products_results,
+    )
+
     manifest_path = output_dir / "download_manifest.json"
-    manifest_data = {
-        "top_n": args.top_n,
-        "chunks_dir": str(chunks_dir),
-        "output_dir": str(output_dir),
-        "products": manifest_results,
-    }
     manifest_path.write_text(
-        json.dumps(manifest_data, indent=2, ensure_ascii=False),
+        json.dumps(manifest, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    # 汇总
-    total_images = sum(r["image_count"] for r in manifest_results)
-    total_success = sum(r.get("success_count", 0) for r in manifest_results)
+    total = manifest["total_images"]
+    ok = manifest["total_success"]
     print(f"\n{'='*50}")
-    print(f"Done! {total_success}/{total_images} images downloaded.")
+    print(f"Done! {ok}/{total} images downloaded.")
     print(f"Output: {output_dir}")
     print(f"Manifest: {manifest_path}")
+
+    return manifest
+
+
+def build_download_manifest(
+    output_dir: str,
+    products_results: list[dict],
+) -> dict:
+    """构造 download_manifest 结构体。"""
+    return {
+        "output_dir": output_dir,
+        "total_images": sum(r["image_count"] for r in products_results),
+        "total_success": sum(r.get("success_count", 0) for r in products_results),
+        "products": products_results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=(
+            "A+ Image Fetcher — 纯下载工具。"
+            "接收模型构造的下载计划（JSON），执行图片下载。"
+        )
+    )
+    parser.add_argument(
+        "--download-plan",
+        type=Path,
+        required=True,
+        help="Path to the download plan JSON file (created by the model)",
+    )
+    args = parser.parse_args()
+
+    try:
+        plan = load_download_plan(args.download_plan)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"Error: Invalid plan file — {e}", file=sys.stderr)
+        sys.exit(2)
+
+    execute_download_plan(plan)
 
 
 if __name__ == "__main__":

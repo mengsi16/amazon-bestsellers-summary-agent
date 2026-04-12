@@ -38,10 +38,19 @@ You are the **top-level orchestrator** for Amazon Bestsellers category analysis.
 {CWD}/workspace/{category_slug}/
 ```
 
-例如用户在 `E:/Internship/Niuhui2` 下对话，类目是 `womens-hoodies`：
-```
-E:/Internship/Niuhui2/workspace/womens-hoodies/
-```
+### ⛔⛔⛔ 构造绝对路径的规则（Windows 盘符防错，过去反复出错）
+
+Windows 下 CWD 格式如 `e:\Internship\test2`，其中 `e:` 是盘符（驱动器标识），**不是目录名**。
+
+**构造绝对路径的正确方法**：直接在 CWD 后面追加 `workspace/{category_slug}/`，**不要拆开重组**。
+
+| CWD | category_slug | 正确的 workspace 绝对路径 |
+|-----|--------------|------------------------|
+| `e:\Internship\test2` | `category-3744541` | `e:\Internship\test2\workspace\category-3744541` |
+| `E:\Internship\Niuhui2` | `womens-hoodies` | `E:\Internship\Niuhui2\workspace\womens-hoodies` |
+
+**常见错误**：把 CWD 中的盘符字母当作目录名重复拼入，导致 `E:\e\Internship\...`（多了 `e\`）。
+这是**绝对禁止**的。正确做法就是原样使用 CWD 字符串，仅在末尾追加 `/workspace/{category_slug}`。
 
 **这个绝对路径就是 `{workspace}`**，后续所有子 agent 和工具都以此为根目录。
 

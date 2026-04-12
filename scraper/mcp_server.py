@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,51 @@ mcp = FastMCP(
     ),
 )
 
+WINDOWS_ROOTED_DRIVE_SEGMENT_RE = re.compile(r"^[\\/](?P<drive>[A-Za-z])[\\/](?P<rest>.*)$")
+WINDOWS_MISSING_COLON_RE = re.compile(r"^(?P<drive>[A-Za-z])[\\/](?P<rest>.*)$")
+WINDOWS_DRIVE_RELATIVE_RE = re.compile(r"^(?P<drive>[A-Za-z]):(?P<rest>[^\\/].*)$")
+
+
+def _coerce_windows_absolute_path(raw_path: str) -> str:
+    """Fix common malformed Windows absolute paths produced by agents.
+
+    Examples:
+      /e/Internship/...   -> E:/Internship/...
+      e\\Internship\\... -> E:/Internship/...
+      e:Internship\\...  -> E:/Internship/...
+    """
+    candidate = raw_path.strip().strip('"').strip("'")
+    if not candidate or os.name != "nt":
+        return candidate
+
+    current_drive = Path.cwd().drive.rstrip(":").upper()
+
+    for pattern in (
+        WINDOWS_ROOTED_DRIVE_SEGMENT_RE,
+        WINDOWS_MISSING_COLON_RE,
+        WINDOWS_DRIVE_RELATIVE_RE,
+    ):
+        match = pattern.match(candidate)
+        if not match:
+            continue
+        drive = match.group("drive").upper()
+        if drive != current_drive:
+            # Avoid coercing malformed paths that do not target the current drive.
+            return candidate
+        rest = match.group("rest").lstrip("\\/").replace("\\", "/")
+        return f"{drive}:/{rest}" if rest else f"{drive}:/"
+
+    return candidate
+
+
+def _is_default_relative_output_dir(path_value: str) -> bool:
+    """Return True for allowed default relative forms of raw_html_output."""
+    normalized = path_value.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.rstrip("/")
+    return normalized == "raw_html_output"
+
 
 def _build_config(
     category_url: str = "",
@@ -54,16 +101,38 @@ def _build_config(
     """Build a CrawlConfig from tool parameters.
 
     WARNING: output_dir should be an absolute path from the orchestrator.
-    If a relative path is passed, it resolves relative to the scraper's CWD,
-    which is almost certainly NOT what you want.
+    If malformed or relative paths are passed, we either normalize known
+    Windows mistakes or fail fast to avoid writing into unexpected directories.
     """
-    resolved = Path(output_dir).resolve()
-    if not Path(output_dir).is_absolute():
+    coerced_output_dir = _coerce_windows_absolute_path(output_dir)
+    if coerced_output_dir != output_dir:
         LOGGER.warning(
-            "output_dir '%s' is relative — resolved to '%s'. "
-            "Orchestrator should pass an absolute path like {workspace}/raw_html_output.",
-            output_dir, resolved,
+            "Normalized output_dir from '%s' to '%s' to fix Windows drive formatting.",
+            output_dir,
+            coerced_output_dir,
         )
+
+    output_path = Path(coerced_output_dir)
+    if not output_path.is_absolute():
+        if _is_default_relative_output_dir(coerced_output_dir):
+            resolved = output_path.resolve()
+            LOGGER.warning(
+                "output_dir '%s' is relative — resolved to '%s'. "
+                "Orchestrator should pass an absolute path like {workspace}/raw_html_output.",
+                output_dir,
+                resolved,
+            )
+        else:
+            raise ValueError(
+                "output_dir must be an absolute path. "
+                f"Received: '{output_dir}'. "
+                "On Windows use 'E:/path' or 'E:\\\\path'. "
+                "Common malformed forms like '/e/path' and 'e\\path' are auto-corrected; "
+                "other relative paths are rejected."
+            )
+    else:
+        resolved = output_path.resolve()
+
     return CrawlConfig(
         category_url=category_url,
         output_dir=resolved,
