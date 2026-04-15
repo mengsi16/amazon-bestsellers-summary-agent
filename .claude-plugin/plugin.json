@@ -1,7 +1,7 @@
 {
   "name": "amazon-bestsellers-summary",
   "version": "2.0.0",
-  "description": "Amazon Bestsellers Top50 类目分析全流程插件。包含编排器、爬虫、分块提取、三维度分析（市场竞争/用户评论/A+内容）、汇总报告。",
+  "description": "Amazon Bestsellers Top50 类目分析全流程插件。包含编排器、爬虫、分块提取、四维度分析（市场竞争/用户评论/A+内容/细分类）与汇总报告。",
   "owner": {
     "name": "mengsi",
     "email": "megnsi16@outlook.com"
@@ -11,7 +11,8 @@
     "./agents/amazon-product-chunker.md",
     "./agents/amazon-bestsellers-marketplace-analyst.md",
     "./agents/amazon-bestsellers-reviews-analyst.md",
-    "./agents/amazon-bestsellers-aplus-analyst.md"
+    "./agents/amazon-bestsellers-aplus-analyst.md",
+    "./agents/amazon-bestsellers-fine-grained-analyst.md"
   ],
   "skills": [
     "./skills",
@@ -19,14 +20,15 @@
     "./skills/amazon-test-chunker/skills",
     "./skills/amazon-bestsellers-aplus-dim",
     "./skills/amazon-bestsellers-marketplace-dim",
-    "./skills/amazon-bestsellers-reviews-dim"
+    "./skills/amazon-bestsellers-reviews-dim",
+    "./skills/amazon-bestsellers-fine-grained-dim"
   ],
   "mcpServers": {
     "amazon-scraper": {
       "command": "python",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/scraper/mcp_server.py"],
+      "args": ["${CLAUDE_PLUGIN_ROOT}/../scraper/mcp_server.py"],
       "env": {
-        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/scraper"
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/../scraper"
       }
     }
   }

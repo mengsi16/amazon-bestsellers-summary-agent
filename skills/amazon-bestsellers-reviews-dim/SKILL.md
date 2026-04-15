@@ -1,5 +1,5 @@
 ---
-name: amazon-bestsellers-top50-reviews-dim
+name: amazon-bestsellers-reviews-dim
 description: >
   当需要分析 Amazon Bestsellers Top50 的用户评论结构、购买动机、高频痛点、产品实用性判断时触发此 skill。
   包括但不限于：评论层级分布、用户核心购买理由、差评痛点提炼、产品切入机会识别等。

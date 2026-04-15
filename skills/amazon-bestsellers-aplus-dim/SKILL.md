@@ -1,5 +1,5 @@
 ---
-name: amazon-bestsellers-top50-aplus-dim
+name: amazon-bestsellers-aplus-dim
 description: >
   当需要分析 Amazon Bestsellers Top50 的 A+ 页面内容、视觉营销策略、品牌故事、产品对比表、图片素材质量时触发此 skill。
   包括但不限于：A+ 模块结构分析、图片视觉风格对比、Comparison Table 分析、品牌叙事策略、A+ 文本内容提取等。
@@ -113,7 +113,7 @@ skills/amazon-bestsellers-aplus-dim/fetch_aplus_images.py
 | Fallback：读 `aplus.html` → 用正则提取 `aplus-media` 图片 URL | **你（模型）** |
 | 给定 URL 列表下载图片到本地 | **fetch_aplus_images.py** |
 
-### 使用方法（两步）
+### 使用方法（推荐 JSON，支持直传 URL）
 
 **第一步：你（模型）构造下载计划文件 `{workspace}/reports/aplus_images/download_plan.json`**
 
@@ -136,16 +136,27 @@ skills/amazon-bestsellers-aplus-dim/fetch_aplus_images.py
 }
 ```
 
-**第二步：调用下载工具**
+**第二步：调用下载工具（推荐）**
 
 ```bash
 python skills/amazon-bestsellers-aplus-dim/fetch_aplus_images.py \
   --download-plan {workspace}/reports/aplus_images/download_plan.json
 ```
 
+**降级模式（不落盘 plan，直接传 URL）**
+
+```bash
+python skills/amazon-bestsellers-aplus-dim/fetch_aplus_images.py \
+    --output-dir {workspace}/reports/aplus_images \
+    --product "001_B0XXXXX" "https://m.media-amazon.com/images/...jpg" "https://m.media-amazon.com/images/...jpg" \
+    --product "002_B0YYYYY" "https://m.media-amazon.com/images/...jpg"
+```
+
 工具产出：
 - `{output_dir}/{dir_name}/aplus_img_001.jpg` 等图片文件
 - `{output_dir}/download_manifest.json`（下载结果清单）
+
+> 必须真实执行终端命令并验证图片文件已落盘。仅生成计划文件或口头描述不算完成下载阶段。
 
 ### 如何从数据源提取图片 URL
 
@@ -304,13 +315,15 @@ src="https://m.media-amazon.com/images/S/aplus-media/..."
 
 1. **数据源隔离**：只读 `aplus/` 子目录下的文件，严禁读取 `ppd/` / `product_details/` / `customer_reviews/` 数据。
 2. **必须读 aplus/raw/aplus.html**：不能只依赖 `aplus/extract/aplus_extracted.md`，因为后者丢失了文本内容和模块结构。
-3. **图片分析前先运行爬虫**：对 Top5 产品，先用 `fetch_aplus_images.py` 下载图片再分析。
+3. **图片分析前先运行下载工具**：优先用 `--download-plan`；失败时使用直传 URL 模式。
 4. **Top N 定位**：优先通过 `global_manifest.json` 确定排名前 N 的产品目录，Fallback 按 `{rank}_{ASIN}` 目录名排序。
 5. 只基于当前 run 数据做结论。
 6. 每个关键结论必须标记为 Verified / Estimated / Assumed。
 7. A+ 内容分析重点是"策略模式"，不是逐字翻译。
 8. 所有建议优先服务于"新卖家应该怎么做 A+"。
 9. **评论内容、价格、品牌竞争等绝对不在此 skill 中分析。**
+10. **JSON 必须可解析**：输出前在终端验证 `python -m json.tool {workspace}/reports/<category_slug>_aplus_dim.json`。
+11. **禁止伪完成**：若 `{workspace}/reports/aplus_images/` 下没有实际图片文件，则不得声明下载完成。
 
 ## Data Coverage Requirements
 

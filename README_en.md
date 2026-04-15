@@ -99,13 +99,15 @@ amazon-bestsellers-summary/
 │   ├── amazon-product-chunker.md            # Data chunking & extraction
 │   ├── amazon-bestsellers-marketplace-analyst.md  # Market analysis
 │   ├── amazon-bestsellers-reviews-analyst.md       # Review analysis
-│   └── amazon-bestsellers-aplus-analyst.md        # A+ content analysis
+│   ├── amazon-bestsellers-aplus-analyst.md        # A+ content analysis
+│   └── amazon-bestsellers-fine-grained-analyst.md # Fine-grained analysis
 ├── skills/                  # Skill definitions
 │   ├── amazon-extractor/    # Data extraction skills
 │   ├── amazon-test-chunker/ # Test chunking skills
 │   ├── amazon-bestsellers-aplus-dim/        # A+ dimension skills
 │   ├── amazon-bestsellers-marketplace-dim/  # Marketplace dimension skills
-│   └── amazon-bestsellers-reviews-dim/      # Reviews dimension skills
+│   ├── amazon-bestsellers-reviews-dim/      # Reviews dimension skills
+│   └── amazon-bestsellers-fine-grained-dim/ # Fine-grained dimension skills
 ├── scraper/                 # MCP Server
 │   ├── mcp_server.py        # MCP service entry
 │   ├── raw_amazon_spider.py # Spider implementation
@@ -119,7 +121,7 @@ amazon-bestsellers-summary/
 
 ### Method: Launch Orchestrator as Main Session (Supports Multi-Agent Orchestration)
 
-> **Important**: Claude Code subagents cannot nest and spawn other subagents. To allow the orchestrator to dispatch child agents (chunker + three analysts), it must be launched as a **main session**:
+> **Important**: Claude Code subagents cannot nest and spawn other subagents. To allow the orchestrator to dispatch child agents (chunker + four analysts), it must be launched as a **main session**:
 
 ```bash
 claude --plugin-dir /your/path/to/amazon-bestsellers-summary --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
@@ -148,7 +150,7 @@ https://www.amazon.com/gp/bestsellers/fashion/1040658/
 The plugin will automatically:
 1. Call MCP Server to crawl Top50 product data
 2. Spawn chunker agent for chunking and extraction
-3. Parallel spawn three analyst agents for dimensional analysis
+3. Parallel spawn four analyst agents for dimensional analysis
 4. Generate consolidated summary report
 
 ---
@@ -165,7 +167,8 @@ workspace/womens-hoodies/
 ├── reports/                 # Analysis reports
 │   ├── marketplace_dim.md   # Market competition analysis
 │   ├── reviews_dim.md       # User review analysis
-│   └── aplus_dim.md         # A+ content analysis
+│   ├── aplus_dim.md         # A+ content analysis
+│   └── fine_grained_dim.md  # Fine-grained analysis
 └── summary.md               # Summary report
 ```
 
@@ -180,6 +183,7 @@ workspace/womens-hoodies/
 | `amazon-bestsellers-marketplace-analyst` | Market competition dimension analysis |
 | `amazon-bestsellers-reviews-analyst` | User review dimension analysis |
 | `amazon-bestsellers-aplus-analyst` | A+ content dimension analysis |
+| `amazon-bestsellers-fine-grained-analyst` | Fine-grained dimension analysis |
 
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: amazon-bestsellers-top50-marketplace-dim
+name: amazon-bestsellers-marketplace-dim
 description: >
   当需要分析 Amazon Bestsellers Top50 的市场竞争格局、排名坑位结构、品牌集中度、价格带分布、卖家结构时触发此 skill。
   包括但不限于：类目概览骨架判断、坑位门槛分析、品牌/卖家占坑、新卖家进入路径、市场体量代理判断、自营占比等。

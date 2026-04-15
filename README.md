@@ -99,13 +99,15 @@ amazon-bestsellers-summary/
 │   ├── amazon-product-chunker.md            # 数据分块提取
 │   ├── amazon-bestsellers-marketplace-analyst.md  # 市场分析
 │   ├── amazon-bestsellers-reviews-analyst.md       # 评论分析
-│   └── amazon-bestsellers-aplus-analyst.md        # A+内容分析
+│   ├── amazon-bestsellers-aplus-analyst.md        # A+内容分析
+│   └── amazon-bestsellers-fine-grained-analyst.md # 细分类分析
 ├── skills/                  # Skill 定义
 │   ├── amazon-extractor/    # 数据提取技能
 │   ├── amazon-test-chunker/ # 测试分块技能
 │   ├── amazon-bestsellers-aplus-dim/        # A+维度技能
 │   ├── amazon-bestsellers-marketplace-dim/  # 市场维度技能
-│   └── amazon-bestsellers-reviews-dim/      # 评论维度技能
+│   ├── amazon-bestsellers-reviews-dim/      # 评论维度技能
+│   └── amazon-bestsellers-fine-grained-dim/ # 细分类维度技能
 ├── scraper/                 # MCP Server
 │   ├── mcp_server.py        # MCP 服务入口
 │   ├── raw_amazon_spider.py # 爬虫实现
@@ -119,7 +121,7 @@ amazon-bestsellers-summary/
 
 ### 方式：作为主会话启动 Orchestrator（支持多 Agent 调度）
 
-> **重要**：Claude Code 的 subagent 无法嵌套 spawn 其他 subagent。要让 orchestrator 调度子 agent（chunker + 三个 analyst），必须将其作为**主会话**启动：
+> **重要**：Claude Code 的 subagent 无法嵌套 spawn 其他 subagent。要让 orchestrator 调度子 agent（chunker + 四个 analyst），必须将其作为**主会话**启动：
 
 ```bash
 claude --plugin-dir /your/path/to/amazon-bestsellers-summary --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
@@ -148,7 +150,7 @@ https://www.amazon.com/gp/bestsellers/fashion/1040658/
 插件将自动：
 1. 调用 MCP Server 爬取 Top50 产品数据
 2. Spawn chunker agent 进行分块提取
-3. 并行 Spawn 三个 analyst agent 进行维度分析
+3. 并行 Spawn 四个 analyst agent 进行维度分析
 4. 汇总生成 summary 报告
 
 ---
@@ -165,7 +167,8 @@ workspace/womens-hoodies/
 ├── reports/                 # 分析报告
 │   ├── marketplace_dim.md   # 市场竞争分析
 │   ├── reviews_dim.md       # 用户评论分析
-│   └── aplus_dim.md         # A+内容分析
+│   ├── aplus_dim.md         # A+内容分析
+│   └── fine_grained_dim.md  # 细分类分析
 └── summary.md               # 汇总报告
 ```
 
@@ -180,6 +183,7 @@ workspace/womens-hoodies/
 | `amazon-bestsellers-marketplace-analyst` | 市场竞争维度分析 |
 | `amazon-bestsellers-reviews-analyst` | 用户评论维度分析 |
 | `amazon-bestsellers-aplus-analyst` | A+内容维度分析 |
+| `amazon-bestsellers-fine-grained-analyst` | 细分类维度分析 |
 
 ---
 

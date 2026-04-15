@@ -1,6 +1,6 @@
 ---
 name: "amazon-bestsellers-orchestrator"
-description: "当用户要求生成某个 Amazon 细分类目的整体分析报告时触发此 agent。示例触发语：「请你帮我生成一份 womens-hoodies 细分类目的整体报告」「请你基于 https://www.amazon.com/gp/bestsellers/fashion/... 生成一份细分类目的整体报告」「分析这个类目的 Bestsellers Top50」「分析这个类目的 Bestsellers Top100」。此 agent 是顶层编排器，负责依次调度 scraper → chunker → 三个维度 analyst → 汇总 summary。"
+description: "当用户要求生成某个 Amazon 细分类目的整体分析报告时触发此 agent。示例触发语：「请你帮我生成一份 womens-hoodies 细分类目的整体报告」「请你基于 https://www.amazon.com/gp/bestsellers/fashion/... 生成一份细分类目的整体报告」「分析这个类目的 Bestsellers Top50」「分析这个类目的 Bestsellers Top100」。此 agent 是顶层编排器，负责依次调度 scraper → chunker → 四个维度 analyst → 汇总 summary。"
 model: sonnet
 color: red
 memory: project
@@ -94,23 +94,28 @@ Windows 下 CWD 格式如 `e:\Internship\test2`，其中 `e:` 是盘符（驱动
 │   └── global_manifest.json
 ├── tests/                             ← Step 3: chunker agent 写入测试
 │   └── test_*.py
-├── reports/                           ← Step 4: 三个 analyst agents 写入
+├── reports/                           ← Step 4: 四个 analyst agents 写入
 │   ├── {category_slug}_marketplace_dim.md
 │   ├── {category_slug}_marketplace_dim.json
 │   ├── {category_slug}_reviews_dim.md
 │   ├── {category_slug}_reviews_dim.json
 │   ├── {category_slug}_aplus_dim.md
 │   ├── {category_slug}_aplus_dim.json
-│   └── aplus_images/
+│   ├── {category_slug}_fine_grained_dim.md
+│   ├── {category_slug}_fine_grained_dim.json
+│   ├── aplus_images/
 │       ├── 001_B0XXXXX/
 │       └── download_manifest.json
+│   └── product_images/
+│       ├── 001_B0XXXXX.jpg
+│       └── download_plan.json
 └── summary.md                         ← Step 5: orchestrator 汇总
 ```
 
 > ⚠️ **再次强调**：`raw_html_output/`、`chunks/`、`reports/`、`summary.md` 全部在 `{workspace}/` 下。
 > scraper 的 `output_dir` 参数必须传 `{workspace}/raw_html_output` 的**绝对路径**。
 > chunker 的 `--out-dir` 参数必须传 `{workspace}/chunks` 的**绝对路径**。
-> 三个 analyst 的报告必须写入 `{workspace}/reports/`。
+> 四个 analyst 的报告必须写入 `{workspace}/reports/`。
 
 ---
 
@@ -132,7 +137,7 @@ Step 3: 触发 amazon-product-chunker agent → 分块 + 提取
         写入 → {workspace}/chunks/  +  {workspace}/chunker/  +  {workspace}/tests/
     │
     ▼
-Step 4: 并行触发三个 analyst agents → 各维度分析
+Step 4: 并行触发四个 analyst agents → 各维度分析
         读取 ← {workspace}/chunks/
         写入 → {workspace}/reports/
     │
@@ -250,9 +255,9 @@ workspace 绝对路径：{workspace}
 
 ---
 
-### Step 4: 触发三个 analyst agents
+### Step 4: 触发四个 analyst agents
 
-chunker 完成后，**使用 Agent 工具并行启动三个维度分析 agent**：
+chunker 完成后，**使用 Agent 工具并行启动四个维度分析 agent**：
 
 **4a. 启动 marketplace analyst（后台运行）：**
 
@@ -296,11 +301,25 @@ category_slug：{category_slug}
 - 报告输出目录：{workspace}/reports/
 ```
 
-> ⚠️ **关键：必须使用 Agent 工具启动这三个 agent**，不要使用 Skill 调用。三个 agent 会各自独立运行，读取各自的 skill 定义（在 agent body 中声明），完成分析后返回结果。
->
-> ⚠️ **并行执行**：三个 analyst agent 应该同时启动（后台并行），而不是依次执行。等待所有三个 agent 完成后再进入 Step 5。
+**4d. 同时启动 fine-grained analyst（后台运行）：**
 
-**检查点**：确认 `{workspace}/reports/` 下有 6 个文件（3 个 .md + 3 个 .json）。
+```
+使用 Agent 工具启动 amazon-bestsellers-summary:amazon-bestsellers-fine-grained-analyst agent，在后台运行：
+
+分析 {workspace}/chunks/ 下的 Amazon Bestsellers Top50/Top100 逐商品细分类结果。
+
+workspace 绝对路径：{workspace}
+category_slug：{category_slug}
+
+- chunks 数据目录：{workspace}/chunks/
+- 报告输出目录：{workspace}/reports/
+```
+
+> ⚠️ **关键：必须使用 Agent 工具启动这四个 agent**，不要使用 Skill 调用。四个 agent 会各自独立运行，读取各自的 skill 定义（在 agent body 中声明），完成分析后返回结果。
+>
+> ⚠️ **并行执行**：四个 analyst agent 应该同时启动（后台并行），而不是依次执行。等待所有四个 agent 完成后再进入 Step 5。
+
+**检查点**：确认 `{workspace}/reports/` 下有 8 个文件（4 个 .md + 4 个 .json）。
 
 ---
 
@@ -350,12 +369,22 @@ category_slug：{category_slug}
 
 ---
 
-## 四、综合判断与行动建议
+## 四、细分类结构与机会（Fine-Grained）
 
-{基于三个维度的交叉分析，给出：}
+{从 {category_slug}_fine_grained_dim.md 中提取关键发现，包括：}
+- Top50 细分类标签分布
+- 高增长与高密度细分类
+- 证据质量与低置信度样本占比
+- 可切入细分类机会
+
+---
+
+## 五、综合判断与行动建议
+
+{基于四个维度的交叉分析，给出：}
 1. 该类目整体竞争态势判断
 2. 新卖家是否值得进入
-3. 如果进入，优先策略建议（产品定位 / 价格带 / A+ 重点 / 评论运营）
+3. 如果进入，优先策略建议（细分类选择 / 产品定位 / 价格带 / A+ 重点 / 评论运营）
 4. 需要规避的风险
 ```
 
@@ -401,7 +430,9 @@ category_slug：{category_slug}
 - [ ] `{workspace}/reports/{category_slug}_reviews_dim.json` 存在
 - [ ] `{workspace}/reports/{category_slug}_aplus_dim.md` 存在
 - [ ] `{workspace}/reports/{category_slug}_aplus_dim.json` 存在
-- [ ] `{workspace}/summary.md` 存在且包含三个维度的综合分析
+- [ ] `{workspace}/reports/{category_slug}_fine_grained_dim.md` 存在
+- [ ] `{workspace}/reports/{category_slug}_fine_grained_dim.json` 存在
+- [ ] `{workspace}/summary.md` 存在且包含四个维度的综合分析
 - [ ] 已向用户报告完成并说明文件位置
 
 **如果上述 checklist 中有未勾选项：绝不回退重爬，只向前推进到下一个未完成的步骤。如果某个步骤的工具已经调用过（无论成功还是失败），不得再次调用，带着已有结果继续。**

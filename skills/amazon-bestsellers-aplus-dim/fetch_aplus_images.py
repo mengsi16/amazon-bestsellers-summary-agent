@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-A+ Image Fetcher — 纯下载工具，接收模型构造的下载计划（JSON），执行图片下载。
+A+ Image Fetcher — 纯下载工具，支持两种输入模式：
+    1) 下载计划 JSON
+    2) 命令行直接传入 dir_name + URLs
 
 Usage:
     python fetch_aplus_images.py --download-plan plan.json
+        python fetch_aplus_images.py --output-dir out_dir \
+            --product "001_B0XXXXX" "https://..." "https://..." \
+            --product "002_B0YYYYY" "https://..."
 
 设计原则（单一职责）：
   - 路径解析（读 global_manifest.json、定位产品目录）→ 模型负责
@@ -115,6 +120,31 @@ def load_download_plan(plan_path: Path) -> dict:
                 f"Product #{i} (dir_name={prod.get('dir_name','?')}) missing required field: 'urls'"
             )
 
+    return plan
+
+
+def build_plan_from_cli(output_dir: str, product_args: list[list[str]]) -> dict:
+    """从 CLI 参数构造下载计划。"""
+    if not output_dir:
+        raise ValueError("CLI mode requires --output-dir")
+    if not product_args:
+        raise ValueError("CLI mode requires at least one --product")
+
+    products: list[dict] = []
+    for i, row in enumerate(product_args):
+        if len(row) < 2:
+            raise ValueError(
+                f"--product entry #{i} must include dir_name and at least one url"
+            )
+        products.append({
+            "dir_name": row[0],
+            "urls": row[1:],
+        })
+
+    plan = {
+        "output_dir": output_dir,
+        "products": products,
+    }
     return plan
 
 
@@ -234,25 +264,50 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "A+ Image Fetcher — 纯下载工具。"
-            "接收模型构造的下载计划（JSON），执行图片下载。"
+            "支持下载计划（JSON）或命令行直接 URL 输入。"
         )
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--download-plan",
         type=Path,
-        required=True,
         help="Path to the download plan JSON file (created by the model)",
+    )
+    input_group.add_argument(
+        "--output-dir",
+        type=str,
+        help="Output dir for direct CLI mode",
+    )
+    parser.add_argument(
+        "--product",
+        action="append",
+        nargs="+",
+        metavar="ITEM",
+        help=(
+            "Direct mode: --product <dir_name> <url1> [url2 ...]. "
+            "Can be repeated."
+        ),
     )
     args = parser.parse_args()
 
-    try:
-        plan = load_download_plan(args.download_plan)
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"Error: Invalid plan file — {e}", file=sys.stderr)
-        sys.exit(2)
+    if args.download_plan:
+        try:
+            plan = load_download_plan(args.download_plan)
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Error: Invalid plan file — {e}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        try:
+            plan = build_plan_from_cli(
+                output_dir=args.output_dir,
+                product_args=args.product,
+            )
+        except ValueError as e:
+            print(f"Error: Invalid CLI input — {e}", file=sys.stderr)
+            sys.exit(3)
 
     execute_download_plan(plan)
 
