@@ -63,22 +63,22 @@ Are you struggling with these analysis challenges?
 
 ```mermaid
 flowchart LR
-    subgraph P1[Phase 1: CRAWL]
-        A[MCP Server<br/>Crawl Top50 Product HTML]
+    subgraph P1["Phase 1: CRAWL"]
+        A["MCP Server<br/>Crawl Top50 Product HTML"]
     end
     
-    subgraph P2[Phase 2: CHUNK]
-        B[Chunker Agent<br/>Chunk & Extract<br/>Structured Store]
+    subgraph P2["Phase 2: CHUNK"]
+        B["Chunker Agent<br/>Chunk & Extract<br/>Structured Store"]
     end
     
-    subgraph P3[Phase 3: ANALYZE]
-        C[Marketplace Analyst<br/>Market Analysis]
-        D[Reviews Analyst<br/>Review Analysis]
-        E[A+ Analyst<br/>Content Strategy]
+    subgraph P3["Phase 3: ANALYZE"]
+        C["Marketplace Analyst<br/>Market Analysis"]
+        D["Reviews Analyst<br/>Review Analysis"]
+        E["A+ Analyst<br/>Content Strategy"]
     end
     
-    subgraph P4[Phase 4: SUMMARY]
-        F[Summary Report<br/>Consolidated Insights]
+    subgraph P4["Phase 4: SUMMARY"]
+        F["Summary Report<br/>Consolidated Insights"]
     end
     
     A --> B --> C --> F

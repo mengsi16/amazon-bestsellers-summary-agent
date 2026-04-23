@@ -65,29 +65,29 @@
 
 ```mermaid
 flowchart LR
-    U[用户请求<br/>Bestsellers URL]
+    U["用户请求<br/>Bestsellers URL"]
 
-    subgraph P1[Phase 1: CRAWL]
+    subgraph P1["Phase 1: CRAWL"]
         direction TB
-        A1[crawl_bestseller_list<br/>类目列表页 + rankings.jsonl]
-        A2[crawl_product_details<br/>商品详情页 ASIN 去重<br/>+ 自动提取 listing / A+ 图]
+        A1["crawl_bestseller_list<br/>类目列表页 + rankings.jsonl"]
+        A2["crawl_product_details<br/>商品详情页 ASIN 去重<br/>+ 自动提取 listing / A+ 图"]
         A1 --> A2
     end
 
-    subgraph P2[Phase 2: CHUNK]
-        B[Chunker Agent<br/>按 rankings.jsonl 生成<br/>{rank}_{ASIN}/ 分块 + 提取]
+    subgraph P2["Phase 2: CHUNK"]
+        B["Chunker Agent<br/>按 rankings.jsonl 生成<br/>{rank}_{ASIN}/ 分块 + 提取"]
     end
 
-    subgraph P3[Phase 3: ANALYZE]
+    subgraph P3["Phase 3: ANALYZE"]
         direction TB
-        C1[Marketplace Analyst<br/>市场竞争]
-        C2[Reviews Analyst<br/>评论洞察]
-        C3[A+ Analyst<br/>A+ 内容策略<br/>读 aplus-images/]
-        C4[Fine-Grained Analyst<br/>细分类判定<br/>读 listing-images/]
+        C1["Marketplace Analyst<br/>市场竞争"]
+        C2["Reviews Analyst<br/>评论洞察"]
+        C3["A+ Analyst<br/>A+ 内容策略<br/>读 aplus-images/"]
+        C4["Fine-Grained Analyst<br/>细分类判定<br/>读 listing-images/"]
     end
 
-    subgraph P4[Phase 4: SUMMARY]
-        F[Summary Report<br/>四维度综合判断]
+    subgraph P4["Phase 4: SUMMARY"]
+        F["Summary Report<br/>四维度综合判断"]
     end
 
     U --> A1
