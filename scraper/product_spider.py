@@ -87,7 +87,7 @@ class ProductCrawlConfig:
     retries_per_fetcher: int = 2
     headless: bool = True
     prefer_stealth: bool = True
-    solve_cloudflare: bool = True
+    solve_cloudflare: bool = False
     useragent: str | None = None
     proxy: str | None = None
     retry_backoff_ms: int = 60000
@@ -203,8 +203,15 @@ class ProductSpider:
         product_list: list[dict[str, Any]],
         max_concurrency: int = 3,
         force: bool = False,
+        max_rounds: int = 3,
+        inter_round_delay_s: float = 30.0,
     ) -> dict[str, Any]:
-        """Crawl product detail pages with async concurrency.
+        """Crawl product detail pages with async concurrency and queue-based retry.
+
+        Each round makes a single attempt per ASIN without inline sleep.
+        Failed ASINs are pushed to the next round's queue; the browser is only
+        idle during the brief inter-round cooldown, keeping the semaphore free
+        for other ASINs in the same round.
 
         Args:
             product_list: List of product dicts with ``canonical_url``
@@ -212,6 +219,8 @@ class ProductSpider:
             max_concurrency: Max concurrent browser tabs (default 3).
             force: If True, re-crawl ASINs that already have a valid
                    ``product.html`` on disk.
+            max_rounds: Maximum retry rounds for failed ASINs (default 3).
+            inter_round_delay_s: Cooldown in seconds between rounds (default 30).
 
         Returns:
             Dict with ``results`` list and ``stats`` summary.
@@ -241,19 +250,16 @@ class ProductSpider:
             else:
                 to_crawl.append(item)
 
-        max_product_retries = 2
-        backoff_multiplier = 1.5
-        base_backoff_s = self.config.retry_backoff_ms / 1000.0
-        total = len(to_crawl)
+        total_targets = len(to_crawl)
         product_success = 0
         product_failed = 0
 
         LOGGER.info(
-            "Crawling %s product detail pages (concurrency=%s, skipped=%s)",
-            total, max_concurrency, len(skipped_results),
+            "Crawling %s product detail pages (concurrency=%s, max_rounds=%s, skipped=%s)",
+            total_targets, max_concurrency, max_rounds, len(skipped_results),
         )
 
-        if total == 0:
+        if total_targets == 0:
             return {
                 "results": skipped_results,
                 "stats": {
@@ -263,6 +269,8 @@ class ProductSpider:
                     "product_skipped": len(skipped_results),
                 },
             }
+
+        final_crawl_results: list[dict[str, Any]] = []
 
         async with AsyncStealthySession(
             max_pages=max_concurrency,
@@ -392,138 +400,176 @@ class ProductSpider:
 
             fetch_kwargs["page_action"] = _prepare_product_page
 
-            async def _fetch_one(index: int, item: dict[str, Any]) -> dict[str, Any]:
-                nonlocal product_success, product_failed
+            async def _fetch_one(
+                index: int, item: dict[str, Any], round_num: int
+            ) -> dict[str, Any]:
+                """Single attempt — no inline retry, no sleep.
+                On failure returns a record with valid_product_page=False;
+                the caller decides whether to retry in the next round.
+                """
                 target_url = str(item["canonical_url"])
                 asin = item.get("asin")
                 product_id = asin if asin else short_hash(target_url)
                 asin_output_dir = asin_dir_for(self.output_dir, product_id)
                 asin_output_dir.mkdir(parents=True, exist_ok=True)
 
-                LOGGER.info("[Product %s/%s] %s", index, total, target_url)
+                LOGGER.info("[R%s][%s/%s] %s", round_num, index, total_targets, target_url)
 
-                valid = False
-                last_response: Response | None = None
-                last_error: str | None = None
+                try:
+                    response = await session.fetch(target_url, **fetch_kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    error_str = f"{type(exc).__name__}: {exc}"
+                    LOGGER.warning("[R%s][%s] fetch failed: %s", round_num, product_id, error_str)
+                    record: dict[str, Any] = {
+                        "request_type": "product",
+                        "requested_url": target_url,
+                        "asin": asin,
+                        "fetcher": "async_stealth",
+                        "attempted_at_utc": utc_now_iso(),
+                        "round": round_num,
+                        "error": error_str,
+                        "blocked": True,
+                        "valid_product_page": False,
+                    }
+                    self._append_jsonl(self.requests_log_path, record)
+                    return record
 
-                for attempt in range(1, max_product_retries + 1):
-                    try:
-                        response = await session.fetch(target_url, **fetch_kwargs)
-                        last_response = response
-                        html = response.html_content
+                html = response.html_content
+                valid = is_valid_product_page(html)
 
-                        if is_valid_product_page(html):
-                            valid = True
-                            break
+                if not valid:
+                    reason = (
+                        "503/service-error" if is_service_error_page(html)
+                        else "captcha/block" if is_probably_block_page(html)
+                        else "no-product-markers"
+                    )
+                    LOGGER.warning(
+                        "[R%s][%s] got %s page (%s bytes)",
+                        round_num, product_id, reason, len(html),
+                    )
 
-                        reason = (
-                            "503/service-error"
-                            if is_service_error_page(html)
-                            else "captcha/block"
-                        )
-                        LOGGER.warning(
-                            "[Product %s] attempt %s/%s got %s page (%s bytes)",
-                            product_id, attempt, max_product_retries,
-                            reason, len(html),
-                        )
-                        last_error = reason
+                html_path = asin_output_dir / "product.html"
+                html_path.write_text(html, encoding="utf-8", errors="replace")
 
-                    except Exception as exc:  # noqa: BLE001
-                        last_error = f"{type(exc).__name__}: {exc}"
-                        LOGGER.warning(
-                            "[Product %s] attempt %s/%s failed: %s",
-                            product_id, attempt, max_product_retries, last_error,
-                        )
-
-                    if attempt < max_product_retries:
-                        wait = base_backoff_s * (backoff_multiplier ** (attempt - 1))
-                        LOGGER.info("Backing off %.1fs before retry …", wait)
-                        await asyncio.sleep(wait)
-
-                product_record: dict[str, Any] = {
+                record = {
                     "request_type": "product",
                     "requested_url": target_url,
                     "asin": asin,
                     "fetcher": "async_stealth",
                     "attempted_at_utc": utc_now_iso(),
-                    "error": last_error if not valid else None,
-                    "blocked": False,
+                    "round": round_num,
+                    "error": None if valid else (reason if not valid else None),
+                    "blocked": not valid,
                     "valid_product_page": valid,
+                    "status_code": getattr(response, "status", None),
+                    "final_url": response.url,
+                    "html_file": str(html_path),
+                    "html_size": len(html),
                 }
-
-                if last_response is None:
-                    product_failed += 1
-                    self._append_jsonl(self.requests_log_path, product_record)
-                    return product_record
-
-                if not valid:
-                    product_record["blocked"] = True
-                    product_record["error"] = (
-                        last_error or "page did not contain product markers after retries"
-                    )
-
-                html_path = asin_output_dir / "product.html"
-                html_path.write_text(
-                    last_response.html_content, encoding="utf-8", errors="replace",
-                )
-
-                product_record.update(
-                    {
-                        "status_code": getattr(last_response, "status", None),
-                        "final_url": last_response.url,
-                        "html_file": str(html_path),
-                        "html_size": len(last_response.html_content),
-                    }
-                )
-                self._append_jsonl(self.requests_log_path, product_record)
-
-                # Write/update per-ASIN meta.json
-                meta_path = asin_output_dir / "meta.json"
-                meta = {
-                    "asin": asin,
-                    "requested_url": target_url,
-                    "final_url": product_record.get("final_url"),
-                    "status_code": product_record.get("status_code"),
-                    "html_size": product_record.get("html_size"),
-                    "valid_product_page": valid,
-                    "fetched_at_utc": product_record["attempted_at_utc"],
-                }
-                meta_path.write_text(
-                    json.dumps(meta, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
+                self._append_jsonl(self.requests_log_path, record)
 
                 if valid:
-                    product_success += 1
+                    meta_path = asin_output_dir / "meta.json"
+                    meta = {
+                        "asin": asin,
+                        "requested_url": target_url,
+                        "final_url": response.url,
+                        "status_code": getattr(response, "status", None),
+                        "html_size": len(html),
+                        "valid_product_page": True,
+                        "fetched_at_utc": record["attempted_at_utc"],
+                    }
+                    meta_path.write_text(
+                        json.dumps(meta, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
                 else:
-                    product_failed += 1
-                    LOGGER.warning("[Product %s] saved but marked as INVALID", product_id)
+                    LOGGER.warning("[R%s][%s] saved but marked INVALID", round_num, product_id)
 
-                return product_record
+                return record
 
-            semaphore = asyncio.Semaphore(max_concurrency)
+            # ---------------------------------------------------------------
+            # Queue-based multi-round loop
+            # ---------------------------------------------------------------
+            retry_queue = list(to_crawl)
 
-            async def _throttled_fetch(index: int, item: dict[str, Any]) -> dict[str, Any]:
-                async with semaphore:
-                    if index > 1 and self.config.delay_ms > 0:
-                        jitter = random.uniform(0.5, 1.5)
-                        await asyncio.sleep(self.config.delay_ms / 1000.0 * jitter)
-                    return await _fetch_one(index, item)
+            for round_num in range(1, max_rounds + 1):
+                if not retry_queue:
+                    LOGGER.info("Round %s/%s: queue empty, done.", round_num, max_rounds)
+                    break
 
-            tasks = [
-                _throttled_fetch(i, item)
-                for i, item in enumerate(to_crawl, start=1)
-            ]
-            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+                round_size = len(retry_queue)
+                LOGGER.info(
+                    "Round %s/%s: %s ASINs to crawl",
+                    round_num, max_rounds, round_size,
+                )
 
-        final_results: list[dict[str, Any]] = list(skipped_results)
-        for r in raw_results:
-            if isinstance(r, Exception):
-                product_failed += 1
-                LOGGER.error("Unexpected error in product task: %s", r)
-                final_results.append({"error": str(r)})
-            else:
-                final_results.append(r)
+                semaphore = asyncio.Semaphore(max_concurrency)
+
+                async def _throttled(
+                    index: int,
+                    item: dict[str, Any],
+                    rn: int = round_num,
+                ) -> dict[str, Any]:
+                    async with semaphore:
+                        if index > 1 and self.config.delay_ms > 0:
+                            jitter = random.uniform(0.5, 1.5)
+                            await asyncio.sleep(self.config.delay_ms / 1000.0 * jitter)
+                        return await _fetch_one(index, item, rn)
+
+                tasks = [
+                    _throttled(i, item)
+                    for i, item in enumerate(retry_queue, start=1)
+                ]
+                round_raw = await asyncio.gather(*tasks, return_exceptions=True)
+
+                next_retry: list[dict[str, Any]] = []
+                round_success = 0
+
+                for item, result in zip(retry_queue, round_raw):
+                    if isinstance(result, Exception):
+                        LOGGER.error("Unexpected gather exception for %s: %s",
+                                     item.get("asin", "?"), result)
+                        if round_num < max_rounds:
+                            next_retry.append(item)
+                        else:
+                            product_failed += 1
+                            final_crawl_results.append({
+                                "request_type": "product",
+                                "requested_url": str(item["canonical_url"]),
+                                "asin": item.get("asin"),
+                                "error": str(result),
+                                "blocked": True,
+                                "valid_product_page": False,
+                                "round": round_num,
+                            })
+                    elif result.get("valid_product_page"):
+                        product_success += 1
+                        round_success += 1
+                        final_crawl_results.append(result)
+                    else:
+                        if round_num < max_rounds:
+                            next_retry.append(item)
+                        else:
+                            product_failed += 1
+                            final_crawl_results.append(result)
+
+                LOGGER.info(
+                    "Round %s/%s complete: %s success, %s failed/queued",
+                    round_num, max_rounds, round_success,
+                    len(next_retry) + (round_size - round_success - len(next_retry)),
+                )
+
+                retry_queue = next_retry
+
+                if retry_queue and round_num < max_rounds:
+                    LOGGER.info(
+                        "Cooling down %.0fs before round %s (%s ASINs remaining) …",
+                        inter_round_delay_s, round_num + 1, len(retry_queue),
+                    )
+                    await asyncio.sleep(inter_round_delay_s)
+
+        final_results: list[dict[str, Any]] = list(skipped_results) + final_crawl_results
 
         stats = {
             "product_targets": len(product_list),
@@ -716,13 +762,14 @@ def load_product_list(args: argparse.Namespace) -> list[dict[str, Any]]:
     seen: set[str] = set()
     product_list: list[dict[str, Any]] = []
     for url in urls:
-        canonical = canonical_product_url(url)
-        if canonical in seen:
+        asin = extract_asin(url)
+        dedup_key = asin if asin else canonical_product_url(url)
+        if dedup_key in seen:
             continue
-        seen.add(canonical)
+        seen.add(dedup_key)
         product_list.append({
-            "canonical_url": canonical,
-            "asin": extract_asin(canonical),
+            "canonical_url": url,
+            "asin": asin,
         })
 
     return product_list

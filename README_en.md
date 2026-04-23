@@ -75,7 +75,10 @@ flowchart LR
     end
 
     subgraph P2["Phase 2: CHUNK"]
-        B["Chunker Agent<br/>Generate {rank}_{ASIN}/<br/>chunk + extract from rankings.jsonl"]
+        direction TB
+        B["Chunker Agent<br/>Golden samples (Top1+Top25)<br/>+ chunk & extract {rank}_{ASIN}/"]
+        BA["Audit Agent<br/>Verify chunks completeness<br/>Report results → Orchestrator handles"]
+        B --> BA
     end
 
     subgraph P3["Phase 3: ANALYZE"]
@@ -92,14 +95,15 @@ flowchart LR
 
     U --> A1
     A2 --> B
-    B --> C1 --> F
-    B --> C2 --> F
-    B --> C3 --> F
-    B --> C4 --> F
+    BA --> C1 --> F
+    BA --> C2 --> F
+    BA --> C3 --> F
+    BA --> C4 --> F
 ```
 
 **Key Design**:
-- **Categories are named by Browse Node ID (codied)**: Pure numeric ID extracted from the tail of the Bestsellers URL, e.g. `1040658`, used as `category_slug`. Model-generated names are forbidden.
+- **Categories are named by Browse Node ID (codied)**: Pure numeric ID extracted from the tail of the Bestsellers URL, e.g. `11058221`, used as `category_slug`. Model-generated names are forbidden.
+- **URL must include category name**: Amazon does not accept numeric-only URLs (`/gp/bestsellers/11058221/` is inaccessible); you must provide a full URL like `/gp/bestsellers/beauty/11058221/`
 - **`products/` is the global ASIN warehouse**: ASIN-deduplicated; MCP skips already-crawled ASINs by default and will not re-request.
 - **`categories/{browse_node_id}/rankings.jsonl`**: Append-only ranking log; each run appends one line, enabling ranking change tracking.
 - **Images are managed uniformly by MCP**: `crawl_product_details` automatically extracts listing + A+ images under `products/{ASIN}/`; agents only read, never download.
@@ -115,6 +119,7 @@ amazon-bestsellers-summary/
 ├── agents/                                          # Agent definitions
 │   ├── amazon-bestsellers-orchestrator.md           # Top-level orchestrator
 │   ├── amazon-product-chunker.md                    # Data chunking & extraction
+│   ├── amazon-chunker-audit.md                      # Chunks completeness audit
 │   ├── amazon-bestsellers-marketplace-analyst.md    # Market analysis
 │   ├── amazon-bestsellers-reviews-analyst.md        # Review analysis
 │   ├── amazon-bestsellers-aplus-analyst.md          # A+ content analysis
@@ -159,7 +164,7 @@ amazon-bestsellers-summary/
 > **Important**: Claude Code subagents cannot nest and spawn other subagents. To allow the orchestrator to dispatch child agents (chunker + four analysts), it must be launched as a **main session**:
 
 ```bash
-claude --plugin-dir /your/path/to/amazon-bestsellers-summary --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
+claude --plugin-dir /your/path/to/amazon-bestsellers-summary-agent --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
 ```
 
 Parameter explanation:
@@ -176,13 +181,14 @@ Analyze the Bestsellers Top50 for this category:
 https://www.amazon.com/gp/bestsellers/fashion/1040658/
 ```
 
-> ⚠️ You must provide a **Bestsellers URL**, not a human-readable category name. The number at the tail of the URL (`1040658` in this example) is the Browse Node ID (codied), which will be used as `category_slug` and the workspace directory name.
+> ⚠️ You must provide a **full Bestsellers URL** (including category name), not a bare numeric ID or a human-readable category name. Amazon does not accept numeric-only URLs; the URL must include the category slug (e.g. `beauty`, `fashion`), such as `https://www.amazon.com/gp/bestsellers/beauty/11058221/`. The number at the tail of the URL is the Browse Node ID (codied), which will be used as `category_slug` and the workspace directory name.
 
 The plugin will automatically:
 1. Call MCP Server to crawl Top50 product data
-2. Spawn chunker agent for chunking and extraction
-3. Parallel spawn four analyst agents for dimensional analysis
-4. Generate consolidated summary report
+2. Spawn chunker agent to generate golden samples and perform chunking & extraction
+3. Spawn audit agent to verify chunks completeness; re-spawn chunker if gaps are found
+4. Parallel spawn four analyst agents for dimensional analysis
+5. Generate consolidated summary report
 
 ---
 
@@ -210,6 +216,13 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 │   │       ├── aplus.html
 │   │       └── images/aplus_img_001.png ...
 │   └── B0YYYYY/...
+├── golden/                                       # Golden samples (LLM-cleaned by chunker, separate from chunks)
+│   ├── {Top1_ASIN}/
+│   │   ├── ppd/ppd_golden.md
+│   │   ├── customer_reviews/customer_reviews_golden.md
+│   │   ├── product_details/product_details_golden.md
+│   │   └── aplus/aplus_golden.md
+│   └── {Top25_ASIN}/...
 ├── chunks/
 │   ├── 001_B0XXXXX/                              # {rank}_{ASIN} (rank from rankings.jsonl)
 │   │   ├── manifest.json
@@ -218,6 +231,7 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 │   │   ├── product_details/...
 │   │   └── aplus/...
 │   └── global_manifest.json
+├── audit_report.json                             # Audit report generated by audit agent
 ├── chunker/                                      # Reusable extractor code generated by chunker agent
 ├── tests/                                        # Regression tests generated by chunker agent
 ├── reports/
@@ -235,7 +249,8 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 | Agent | Responsibility | Input | Output |
 |-------|--------------|-------|--------|
 | `amazon-bestsellers-orchestrator` | Top-level orchestrator, coordinates the entire pipeline | Category URL | Scheduling + `summary.md` |
-| `amazon-product-chunker` | Data chunking and structured extraction | `products/{ASIN}/product.html` + `rankings.jsonl` | `chunks/{rank}_{ASIN}/` |
+| `amazon-product-chunker` | Data chunking & structured extraction (incl. golden sample generation) | `products/{ASIN}/product.html` + `rankings.jsonl` | `golden/{ASIN}/` + `chunks/{rank}_{ASIN}/` |
+| `amazon-chunker-audit` | Verify chunks completeness, report findings (orchestrator re-spawns chunker to fix gaps) | `chunks/` + `golden/` | `audit_report.json` |
 | `amazon-bestsellers-marketplace-analyst` | Market competition dimension analysis | `ppd/` + `product_details/` | `{browse_node_id}_marketplace_dim.{md,json}` |
 | `amazon-bestsellers-reviews-analyst` | User review dimension analysis | `customer_reviews/` | `{browse_node_id}_reviews_dim.{md,json}` |
 | `amazon-bestsellers-aplus-analyst` | A+ content dimension analysis | `aplus/` + `products/{ASIN}/aplus-images/` | `{browse_node_id}_aplus_dim.{md,json}` |

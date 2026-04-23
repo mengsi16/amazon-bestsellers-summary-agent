@@ -200,15 +200,21 @@ async def crawl_product_details(
     max_concurrency: int = 3,
     delay_ms: int = 3500,
     headless: bool = True,
-    solve_cloudflare: bool = True,
+    solve_cloudflare: bool = False,
     proxy: str | None = None,
     auto_extract_images: bool = True,
     force: bool = False,
+    max_rounds: int = 3,
+    inter_round_delay_s: float = 30.0,
 ) -> dict[str, Any]:
     """Crawl Amazon product detail pages with async concurrency + ASIN-based de-duplication.
 
     Already-crawled ASINs (valid product.html exists, > 500KB, contains product markers)
     are **skipped by default** unless ``force=True``.
+
+    Uses queue-based retry: each round makes one attempt per ASIN without
+    inline sleep. Failed ASINs are queued for the next round, keeping
+    semaphore slots free for other ASINs in the same round.
 
     Writes to:
       {workspace}/products/{ASIN}/
@@ -224,11 +230,13 @@ async def crawl_product_details(
         max_concurrency: Max concurrent browser tabs (default: 3)
         delay_ms: Delay between requests in ms (default: 3500)
         headless: Run browser headlessly (default: True)
-        solve_cloudflare: Enable Cloudflare bypass (default: True)
+        solve_cloudflare: Enable Cloudflare bypass (default: False; Amazon does not use Cloudflare)
         proxy: Optional proxy string
         auto_extract_images: Auto-run listing + A+ extraction after each
             successful crawl (default: True)
         force: Re-crawl ASINs even if valid product.html already exists
+        max_rounds: Max retry rounds for failed ASINs (default: 3)
+        inter_round_delay_s: Cooldown seconds between rounds (default: 30)
 
     Returns:
         Dict with stats + per-product results (including extraction outcomes).
@@ -246,16 +254,25 @@ async def crawl_product_details(
     )
     spider = ProductSpider(config)
 
-    product_list = [
-        {
-            "canonical_url": canonical_product_url(url),
-            "asin": extract_asin(url),
-        }
-        for url in product_urls
-    ]
+    seen: set[str] = set()
+    product_list = []
+    for url in product_urls:
+        asin = extract_asin(url)
+        dedup_key = asin if asin else canonical_product_url(url)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        product_list.append({
+            "canonical_url": url,
+            "asin": asin,
+        })
 
     crawl_result = await spider.crawl_product_details(
-        product_list, max_concurrency=max_concurrency, force=force,
+        product_list,
+        max_concurrency=max_concurrency,
+        force=force,
+        max_rounds=max_rounds,
+        inter_round_delay_s=inter_round_delay_s,
     )
 
     # Auto-extract listing + A+ images for every successfully-crawled ASIN.

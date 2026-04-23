@@ -9,6 +9,7 @@
   "agents": [
     "./agents/amazon-bestsellers-orchestrator.md",
     "./agents/amazon-product-chunker.md",
+    "./agents/amazon-chunker-audit.md",
     "./agents/amazon-bestsellers-marketplace-analyst.md",
     "./agents/amazon-bestsellers-reviews-analyst.md",
     "./agents/amazon-bestsellers-aplus-analyst.md",
@@ -26,9 +27,9 @@
   "mcpServers": {
     "amazon-scraper": {
       "command": "python",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/../scraper/mcp_server.py"],
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scraper/mcp_server.py"],
       "env": {
-        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/../scraper"
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/scraper"
       }
     }
   }

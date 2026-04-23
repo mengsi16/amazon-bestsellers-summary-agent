@@ -75,7 +75,10 @@ flowchart LR
     end
 
     subgraph P2["Phase 2: CHUNK"]
-        B["Chunker Agent<br/>按 rankings.jsonl 生成<br/>{rank}_{ASIN}/ 分块 + 提取"]
+        direction TB
+        B["Chunker Agent<br/>黄金样本（Top1+Top25）<br/>+ 分块提取 {rank}_{ASIN}/"]
+        BA["Audit Agent<br/>审查 chunks 完整性<br/>报告结果→Orchestrator 处理"]
+        B --> BA
     end
 
     subgraph P3["Phase 3: ANALYZE"]
@@ -92,14 +95,15 @@ flowchart LR
 
     U --> A1
     A2 --> B
-    B --> C1 --> F
-    B --> C2 --> F
-    B --> C3 --> F
-    B --> C4 --> F
+    BA --> C1 --> F
+    BA --> C2 --> F
+    BA --> C3 --> F
+    BA --> C4 --> F
 ```
 
 **关键设计**：
-- **类目以 Browse Node ID (codied) 命名**：从 Bestsellers URL 尾部抽取的纯数字，如 `1040658`，作为 `category_slug`，禁止模型自己起名
+- **类目以 Browse Node ID (codied) 命名**：从 Bestsellers URL 尾部抽取的纯数字，如 `11058221`，作为 `category_slug`，禁止模型自己起名
+- **URL 必须包含类目名**：Amazon 不接受纯数字 ID 的 URL（`/gp/bestsellers/11058221/` 无法访问），必须提供完整 URL 如 `/gp/bestsellers/beauty/11058221/`
 - **products/ 是全局 ASIN 仓库**：按 ASIN 去重，MCP 默认跳过已爬过的 ASIN，不会重复请求
 - **categories/{browse_node_id}/rankings.jsonl**：append-only 排名日志，每次运行追加一行，可追踪排名变化
 - **图片由 MCP 统一负责**：`crawl_product_details` 时自动提取 listing + A+ 图到 `products/{ASIN}/` 下，agent 只读取不下载
@@ -115,6 +119,7 @@ amazon-bestsellers-summary/
 ├── agents/                                          # Agent 定义
 │   ├── amazon-bestsellers-orchestrator.md           # 顶层编排器
 │   ├── amazon-product-chunker.md                    # 数据分块提取
+│   ├── amazon-chunker-audit.md                      # chunks 完整性审查
 │   ├── amazon-bestsellers-marketplace-analyst.md    # 市场分析
 │   ├── amazon-bestsellers-reviews-analyst.md        # 评论分析
 │   ├── amazon-bestsellers-aplus-analyst.md          # A+ 内容分析
@@ -159,7 +164,7 @@ amazon-bestsellers-summary/
 > **重要**：Claude Code 的 subagent 无法嵌套 spawn 其他 subagent。要让 orchestrator 调度子 agent（chunker + 四个 analyst），必须将其作为**主会话**启动：
 
 ```bash
-claude --plugin-dir /your/path/to/amazon-bestsellers-summary --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
+claude --plugin-dir /your/path/to/amazon-bestsellers-summary-agent --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
 ```
 
 参数说明：
@@ -176,13 +181,14 @@ claude --plugin-dir /your/path/to/amazon-bestsellers-summary --agent amazon-best
 https://www.amazon.com/gp/bestsellers/fashion/1040658/
 ```
 
-> ⚠️ 必须提供 **Bestsellers URL**，而不是类目名称。URL 尾部的数字（本例 `1040658`）就是 Browse Node ID (codied)，会被作为 `category_slug` 和 workspace 目录名。
+> ⚠️ 必须提供 **完整的 Bestsellers URL**（含类目名），而不是纯数字 ID 或类目名称。Amazon 不接受纯数字 ID 的 URL，URL 中必须包含类目名（如 `beauty`、`fashion`），例如 `https://www.amazon.com/gp/bestsellers/beauty/11058221/`。URL 尾部的数字就是 Browse Node ID (codied)，会被作为 `category_slug` 和 workspace 目录名。
 
 插件将自动：
 1. 调用 MCP Server 爬取 Top50 产品数据
-2. Spawn chunker agent 进行分块提取
-3. 并行 Spawn 四个 analyst agent 进行维度分析
-4. 汇总生成 summary 报告
+2. Spawn chunker agent 生成黄金样本并进行分块提取
+3. Spawn audit agent 审查 chunks 完整性；若缺漏则重启 chunker 补跑
+4. 并行 Spawn 四个 analyst agent 进行维度分析
+5. 汇总生成 summary 报告
 
 ---
 
@@ -210,6 +216,13 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 │   │       ├── aplus.html
 │   │       └── images/aplus_img_001.png ...
 │   └── B0YYYYY/...
+├── golden/                                       # 黄金样本（由 chunker agent LLM 清洗，与 chunks 独立）
+│   ├── {Top1_ASIN}/
+│   │   ├── ppd/ppd_golden.md
+│   │   ├── customer_reviews/customer_reviews_golden.md
+│   │   ├── product_details/product_details_golden.md
+│   │   └── aplus/aplus_golden.md
+│   └── {Top25_ASIN}/...
 ├── chunks/
 │   ├── 001_B0XXXXX/                              # {rank}_{ASIN}（rank 来自 rankings.jsonl）
 │   │   ├── manifest.json
@@ -218,6 +231,7 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 │   │   ├── product_details/...
 │   │   └── aplus/...
 │   └── global_manifest.json
+├── audit_report.json                             # 由 audit agent 生成的审查报告
 ├── chunker/                                      # 由 chunker agent 生成的可复用提取器代码
 ├── tests/                                        # 由 chunker agent 生成的回归测试
 ├── reports/
@@ -235,7 +249,8 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 | Agent | 职责 | 输入 | 输出 |
 |-------|------|------|------|
 | `amazon-bestsellers-orchestrator` | 顶层编排器，协调整个流水线 | 类目 URL | 调度 + `summary.md` |
-| `amazon-product-chunker` | 数据分块与结构化提取 | `products/{ASIN}/product.html` + `rankings.jsonl` | `chunks/{rank}_{ASIN}/` |
+| `amazon-product-chunker` | 数据分块与结构化提取（含黄金样本生成） | `products/{ASIN}/product.html` + `rankings.jsonl` | `golden/{ASIN}/` + `chunks/{rank}_{ASIN}/` |
+| `amazon-chunker-audit` | 审查 chunks 完整性，返回审查结果（缺漏由 orchestrator 重启 chunker 补跑） | `chunks/` + `golden/` | `audit_report.json` |
 | `amazon-bestsellers-marketplace-analyst` | 市场竞争维度分析 | `ppd/` + `product_details/` | `{browse_node_id}_marketplace_dim.{md,json}` |
 | `amazon-bestsellers-reviews-analyst` | 用户评论维度分析 | `customer_reviews/` | `{browse_node_id}_reviews_dim.{md,json}` |
 | `amazon-bestsellers-aplus-analyst` | A+ 内容维度分析 | `aplus/` + `products/{ASIN}/aplus-images/` | `{browse_node_id}_aplus_dim.{md,json}` |
