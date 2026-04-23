@@ -27,13 +27,17 @@ type: skill
 4. 输出为独立 HTML 文件：`<block_name>.html`
 5. 未命中的块记录到 manifest，不报错
 
+## 输入来源
+
+MCP scraper 产出：`{workspace}/products/{ASIN}/product.html`
+
 ## 分块器工作步骤
 
-1. 读取用户提供的 HTML 样本文件
+1. 读取 `products/{ASIN}/product.html` 样本文件（优先 Top1/Top25）
 2. 用 Python 脚本探测所有带 `id` 的顶层节点，对比多个样本找出共有块
 3. 确认 4 个目标块的 selector 在所有样本上都能命中
 4. 如果发现某个块使用了备选 selector，记录下来
-5. 生成分块器代码 + 测试
+5. 根据实际 HTML 样本确定 `chunker/static_chunker.py` 中每个 block 的 selector，生成分块器代码 + 测试
 
 ## 产出
 

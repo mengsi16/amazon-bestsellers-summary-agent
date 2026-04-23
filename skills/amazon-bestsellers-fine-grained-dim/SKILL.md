@@ -19,7 +19,7 @@ hooks: []
 1. `<out_dir>/{rank}_{ASIN}/ppd/extract/ppd_extracted.md`
 2. `<out_dir>/{rank}_{ASIN}/product_details/extract/product_details_extracted.md`
 3. `<out_dir>/global_manifest.json`
-4. `{workspace}/reports/product_images/`（由本 skill 下载后读取）
+4. `{workspace}/products/{ASIN}/listing-images/`（由 scraper MCP 在爬取时自动提取并下载）
 
 绝对禁止读取：
 - `customer_reviews/` 数据
@@ -69,27 +69,41 @@ hooks: []
 6. 机会判断：识别标签空档和过度拥挤标签。
 7. 风险提示：识别易混淆标签和低置信度集中区。
 
-## 图片下载流程
+## 商品图片数据源
 
-优先使用下载计划模式；如果计划文件生成失败或命令过长，再降级为直传 URL 模式。无论哪种模式，都必须真实执行终端命令并验证文件落盘。
+Listing 图片（详情页主图 / 海报图）已由 scraper MCP 在 `crawl_product_details` 阶段自动提取到
+`{workspace}/products/{ASIN}/listing-images/` 下。**不要调用任何外部下载脚本**。
 
-**模式 A（推荐）— 下载计划文件**
+### 图片目录布局
 
-```bash
-python skills/amazon-bestsellers-fine-grained-dim/fetch_product_images.py \
-  --download-plan {workspace}/reports/product_images/download_plan.json
+```
+{workspace}/products/{ASIN}/listing-images/
+├── urls.json              图片 URL 清单 + 本地路径 + 下载状态
+└── images/
+    ├── listing_img_001.jpg
+    ├── listing_img_002.jpg
+    └── ...
 ```
 
-**模式 B（降级）— 直传 URL（可分批）**
+### 读取方式
 
-```bash
-python skills/amazon-bestsellers-fine-grained-dim/fetch_product_images.py \
-  --output-dir {workspace}/reports/product_images \
-  --product "001_B0XXXXX" "https://..." \
-  --product "002_B0XXXXY" "https://..."
+1. 从 `{workspace}/chunks/global_manifest.json` 定位 Top50 产品的 `{rank}_{ASIN}/` 目录
+2. 对每个产品，直接读取：
+   - `{workspace}/products/{ASIN}/listing-images/urls.json`——包含 `image_count`、`urls`、每张图的 `local_path` 和下载状态
+   - `{workspace}/products/{ASIN}/listing-images/images/listing_img_NNN.jpg`——本地图片文件
+3. 若某个 ASIN 的 `listing-images/` 目录不存在或 `urls.json` 缺少，调用 MCP 工具补跑：
+
+```
+extract_listing_images(
+    asin = "B0XXXXX",
+    output_dir = "{workspace}",
+    download = True
+)
 ```
 
-> ⛔⛔⛔ 绝对禁止脑补下载结果。若目录中没有实际图片文件与 `download_manifest.json`，则下载步骤未完成。
+该工具使用本地缓存的 `{workspace}/products/B0XXXXX/product.html` 重新解析，不会重新访问 Amazon 网站。
+
+> 必须验证 `{workspace}/products/{ASIN}/listing-images/images/` 下存在真实图片文件后，才能用作视觉证据。
 
 ## Output Format
 

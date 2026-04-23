@@ -1,348 +1,116 @@
-# Amazon Bestsellers Raw HTML Scraper
+# Amazon Bestsellers Scraper
 
-## Overview
+本目录提供 Amazon Bestsellers 流水线的**爬虫 + 图片提取**层，既以 **MCP Server** 形式被 agent 调用，也保留独立 CLI 用于调试。
 
-A Python command-line crawler that archives **raw HTML** from Amazon Bestsellers category pages and their product detail pages. It does **not** parse or extract structured data — its sole purpose is to reliably download and persist the full rendered HTML (plus request metadata) so that downstream tools can process the pages offline.
+## 组件总览
 
-### How It Works (Two-Phase Crawl)
+| 文件 | 职责 | CLI 可用 |
+|---|---|---|
+| `mcp_server.py` | MCP Server：对外暴露 4 个工具（见下） | — |
+| `category_spider.py` | 爬取 Bestsellers 类目列表页，写入 `categories/{browse_node_id}/`，追加 `rankings.jsonl` | ✅ |
+| `product_spider.py` | 爬取商品详情页，按 ASIN 去重，写入 `products/{ASIN}/product.html` + `meta.json` | ✅ |
+| `extract_listing_images.py` | 从 `products/{ASIN}/product.html` 提取 listing 图到 `listing-images/` | ✅ |
+| `extract_aplus.py` | 提取 A+ 内容与图片到 `aplus-images/`（含 `aplus_extracted.md`） | ✅ |
+| `downloader.py` | 通用图片下载工具（被上面两个 extractor 使用） | ✅ |
 
-1. **Phase 1 — Category Listing Pages**
-   - Fetches the given Amazon Bestsellers category URL (e.g. `https://www.amazon.com/gp/bestsellers/home-garden/3744541`).
-   - Extracts all product links (ASIN-based `/dp/` URLs) from the page.
-   - Follows pagination links within the same category (controlled by `--max-category-pages`).
+## 核心设计
 
-2. **Phase 2 — Product Detail Pages**
-   - Takes the discovered product URLs from Phase 1.
-   - Crawls each product's detail page individually (controlled by `--max-products`).
-   - Saves the full rendered HTML of each product page.
+- **workspace 根目录**：所有输出都以 workspace 为根，布局如下
+  ```
+  {workspace}/
+  ├── categories/{browse_node_id}/    类目列表页 HTML + rankings.jsonl（append-only）
+  ├── products/{ASIN}/                全局 ASIN 仓库（按 ASIN 去重）
+  │   ├── product.html
+  │   ├── meta.json
+  │   ├── listing-images/
+  │   └── aplus-images/
+  ```
+- **browse_node_id (codied)**：Amazon Bestsellers URL 尾部的数字 ID，如 `https://www.amazon.com/gp/bestsellers/fashion/1040658/` 的 `1040658`，作为 `category_slug` 使用。
+- **幂等跳过**：`product_spider.py` 默认跳过 `products/{ASIN}/product.html` 已存在且 >500KB 的 ASIN。
+- **排名快照**：`rankings.jsonl` 每次运行追加一行，记录该次爬取的 `{ASIN: rank}` 字典，用于追踪排名变化。
 
-All fetched pages are saved as **raw `.html` files**. Request/response metadata (headers, cookies, status codes, redirect history, etc.) and discovered product links are recorded as **JSONL** files for traceability.
+## MCP 工具
 
-### Key Features
+`mcp_server.py` 暴露以下 4 个工具供 Claude-Code agent 调用：
 
-| Feature | Description |
-|---|---|
-| **Raw HTML Archiving** | Saves the full browser-rendered HTML of every page — no lossy parsing at crawl time. |
-| **Two-Phase Crawl** | First collects product URLs from Bestsellers listing pages, then crawls each product detail page. |
-| **Dual Fetcher with Fallback** | Uses `scrapling` library's `DynamicFetcher` and `StealthyFetcher`; automatically falls back if the primary fetcher is blocked. |
-| **Anti-Bot Detection** | Detects CAPTCHA / robot-check pages and flags them as `blocked` in metadata. |
-| **Auto-Scroll for Lazy Loading** | Automatically scrolls category pages to trigger Amazon's lazy-loaded XHR, ensuring all Top 50 products are discovered (not just the initial ~30). |
-| **XHR Capture** | Optionally captures all XHR/fetch network requests made during page load (including lazy-load responses). |
-| **Category Pagination** | Follows `?pg=` pagination within the same Bestsellers category path. |
-| **Structured Metadata** | Logs every request to `requests.jsonl` with status, headers, cookies, redirect history, and timing. |
-| **Proxy Support** | Optional proxy for all requests (`--proxy`). |
-| **Request Throttling** | Configurable delay between requests (`--delay-ms`) to reduce detection risk. |
-| **Headless / Headful** | Run the browser headless (default) or headful for debugging (`--headful`). |
-| **CLI Driven** | All options via command-line arguments; no config files needed. |
+| 工具 | 作用 | 写入位置 |
+|---|---|---|
+| `crawl_bestseller_list` | 爬取类目列表页 | `categories/{browse_node_id}/` |
+| `crawl_product_details` | 爬取商品详情页（ASIN 去重）+ 自动提取 listing + A+ 图 | `products/{ASIN}/` |
+| `extract_listing_images` | 单独补跑某 ASIN 的 listing 图提取 | `products/{ASIN}/listing-images/` |
+| `extract_aplus_images` | 单独补跑某 ASIN 的 A+ 图提取 | `products/{ASIN}/aplus-images/` |
 
----
+所有工具的 `output_dir` 参数必须传 **workspace 根目录的绝对路径**。
 
-## Project Structure
-
-```
-Amazon-Bestsellers-Scraper/
-├── src/
-│   ├── raw_amazon_spider.py   # Main crawler script (entry point)
-│   ├── mcp_server.py          # MCP Server for Claude-Code integration
-│   ├── requirements.txt       # Python dependencies
-│   └── Makefile               # Shortcut commands (setup, fmt)
-├── raw_html_output/           # Crawl output root (git-ignored)
-│   └── <run_id>/              # One folder per run, e.g. 20260402T011314Z
-│       ├── categories/        # Raw HTML of Bestsellers listing pages
-│       ├── products/          # Raw HTML of product detail pages
-│       ├── xhr/               # Captured XHR responses (JSONL)
-│       └── meta/
-│           ├── requests.jsonl       # Full request/response log
-│           ├── product_links.jsonl  # All discovered product URLs + ASINs
-│           └── crawl_summary.json   # Run config, stats, output paths
-└── README.md
-```
-
----
-
-## Installation
+## 安装
 
 ```bash
-# 1. Create & activate a virtual environment
-python -m venv .venv
-# Linux / macOS:
-source .venv/bin/activate
-# Windows:
-.venv\Scripts\activate
-
-# 2. Install dependencies
-pip install -r src/requirements.txt
-
-# 3. Install the Chromium browser for Playwright (required by scrapling)
+pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-### Dependencies
+## CLI 调试用法
 
-| Package | Purpose |
-|---|---|
-| `scrapling[fetchers]==0.4.3` | Browser-based fetching (DynamicFetcher / StealthyFetcher) |
-| `playwright==1.47.0` | Headless Chromium automation (used by scrapling) |
-| `python-dotenv==1.0.1` | Environment variable loading |
-
----
-
-## Usage
-
-Recommended entry point: `main.py` at the project root.
-
-It runs the full pipeline in one command:
-
-1. scraper
-2. chunker
-3. extraction + global manifest build
-
-### Unified Entry Point (Recommended)
+### 1. 爬取类目列表页
 
 ```bash
-# run from project root
-python main.py "https://www.amazon.com/gp/bestsellers/home-garden/3744541/ref=pd_zg_hrsr_home-garden"
+python category_spider.py \
+  --category-url "https://www.amazon.com/gp/bestsellers/home-garden/3744541/" \
+  --output-dir ./workspace/3744541 \
+  --max-category-pages 2
 ```
 
-Common options:
+### 2. 爬取商品详情页
 
 ```bash
-# set explicit run id
-python main.py "<category_url>" --run-id 20260402T035937Z
-
-# rebuild chunk/extract/manifest only (skip network crawl)
-python main.py "<category_url>" --run-id 20260402T035937Z --skip-scrape
-
-# rebuild organized tree + run manifest only
-python main.py "<category_url>" --run-id 20260402T035937Z --skip-scrape --skip-chunk
-
-# limit crawl size
-python main.py "<category_url>" --max-category-pages 1 --max-products 50
-```
-
-### Low-Level Entrypoint (Advanced)
-
-If you need to debug crawler-only behavior, you can still use `raw_amazon_spider.py` directly. All options are passed via CLI arguments.
-
-### Basic Example
-
-```bash
-# Crawl the "Vacuum Storage Bags" Bestsellers category
-# Fetch up to 2 category pages, then crawl up to 50 product detail pages
-python raw_amazon_spider.py \
-  --category-url "https://www.amazon.com/gp/bestsellers/home-garden/3744541" \
-  --max-category-pages 2 \
-  --max-products 50
-```
-
-### Minimal Test Run
-
-```bash
-# Quick test: 1 category page, 1 product page
-python raw_amazon_spider.py \
-  --category-url "https://www.amazon.com/gp/bestsellers/home-garden/3744541" \
-  --max-category-pages 1 \
-  --max-products 1
-```
-
-### Full Options
-
-```
-usage: raw_amazon_spider.py [-h] --category-url CATEGORY_URL
-                            [--output-dir OUTPUT_DIR]
-                            [--max-category-pages N]
-                            [--max-products N]
-                            [--timeout-ms MS]
-                            [--wait-ms MS]
-                            [--delay-ms MS]
-                            [--retries-per-fetcher N]
-                            [--headless | --headful]
-                            [--prefer-stealth]
-                            [--solve-cloudflare]
-                            [--capture-xhr-pattern REGEX | --no-capture-xhr]
-                            [--useragent UA]
-                            [--proxy PROXY]
-                            [--log-level {DEBUG,INFO,WARNING,ERROR}]
-```
-
-| Argument | Default | Description |
-|---|---|---|
-| `--category-url` | *(required)* | Amazon Bestsellers category URL to crawl. |
-| `--output-dir` | `raw_html_output` | Root directory for crawl output. |
-| `--max-category-pages` | `1` | Max number of Bestsellers listing pages to crawl (pagination). |
-| `--max-products` | `None` (all) | Max product detail pages to crawl. `None` = crawl all discovered. |
-| `--timeout-ms` | `90000` | Browser page load timeout in milliseconds. |
-| `--wait-ms` | `2500` | Extra wait after page settles (ms). |
-| `--delay-ms` | `1200` | Delay between consecutive requests (ms). |
-| `--retries-per-fetcher` | `2` | Retry attempts per fetcher before falling back. |
-| `--headless` / `--headful` | `--headless` | Run browser headless or with visible UI. |
-| `--prefer-stealth` | `false` | Try `StealthyFetcher` before `DynamicFetcher`. |
-| `--solve-cloudflare` | `false` | Enable Cloudflare challenge solving (stealth fetcher only). |
-| `--capture-xhr-pattern` | `.*` (all) | Regex to filter captured XHR requests. |
-| `--no-capture-xhr` | — | Disable XHR capture entirely. |
-| `--useragent` | `None` | Custom User-Agent string. |
-| `--proxy` | `None` | Proxy URL (e.g. `http://user:pass@host:port`). |
-| `--no-scroll` | *(off)* | Disable auto-scrolling on category pages. |
-| `--scroll-pause-ms` | `1500` | Pause between scroll steps in ms. |
-| `--log-level` | `INFO` | Logging verbosity. |
-
----
-
-## Chunk Extraction + Manifest Sync
-
-After `static_chunker.py` generates block files and `manifest.json`, you can run three focused extractors to generate markdown outputs.
-
-### Single Product: Run Three Extractors
-
-```bash
-python chunker/customer_reviews_extract.py chunks/20260402T035937Z/product_0001_B0DRNRC5H5/B0DRNRC5H5/customer_reviews.html
-python chunker/product_details_extract.py chunks/20260402T035937Z/product_0001_B0DRNRC5H5/B0DRNRC5H5/product_details.html
-python chunker/ppd_extract.py chunks/20260402T035937Z/product_0001_B0DRNRC5H5/B0DRNRC5H5/ppd.html
-```
-
-These extractors automatically update `manifest.json` entries under `blocks`:
-- `customer_reviews_extracted`
-- `product_details_extracted`
-- `ppd_extracted`
-
-### Single Product: One-Shot Manifest Sync (Optional)
-
-If you want an explicit final sync after extraction:
-
-```bash
-python chunker/sync_extract_manifest.py chunks/20260402T035937Z/product_0001_B0DRNRC5H5/B0DRNRC5H5
-```
-
-### Batch Mode: Extract + Sync All Products
-
-Run all three extractors for every product directory under `chunks/`, then sync each manifest:
-
-```bash
-python chunker/batch_extract_and_sync.py chunks/20260402T035937Z/
-```
-
-Useful options:
-
-```bash
-# smoke run on the first product only
-python chunker/batch_extract_and_sync.py chunks/20260402T035937Z/ --limit 1
-
-# stop immediately when any extraction/sync fails
-python chunker/batch_extract_and_sync.py chunks/20260402T035937Z/ --strict
-```
-
----
-
-## Output Format
-
-Each run creates a timestamped folder under `raw_html_output/` (e.g. `20260402T011314Z/`).
-
-### `categories/*.html`
-Raw browser-rendered HTML of each Bestsellers listing page. File naming: `category_001_<hash>.html`.
-
-### `products/*.html`
-Raw browser-rendered HTML of each product detail page. File naming: `product_0001_<ASIN>.html`.
-
-### `xhr/*.jsonl`
-Captured XHR/fetch responses per page (if enabled). Each line is a JSON object with URL, status, headers, and response body.
-
-### `meta/requests.jsonl`
-One JSON line per HTTP request (both category and product). Fields include:
-- `request_type` — `"category"` or `"product"`
-- `source_url`, `requested_url`, `final_url` — URL chain
-- `asin` — extracted ASIN (product requests only)
-- `fetcher` — which fetcher was used (`dynamic` / `stealth`)
-- `status_code`, `reason`, `headers`, `cookies`, `history`
-- `blocked` — `true` if the page appears to be a CAPTCHA/anti-bot page
-- `html_file`, `html_size` — path and size of saved HTML
-- `xhr_file`, `xhr_count` — path and count of captured XHR
-
-### `meta/product_links.jsonl`
-All product URLs discovered from category pages. Fields:
-- `discovered_order` — discovery sequence number
-- `discovered_from` — the category page URL
-- `raw_url` — original href from the page
-- `canonical_url` — cleaned `https://www.amazon.com/dp/<ASIN>` form
-- `asin` — extracted 10-character ASIN
-
-### `meta/crawl_summary.json`
-Run-level summary including input config and final stats:
-```json
-{
-  "run_id": "20260402T011314Z",
-  "inputs": { "category_url": "...", "max_category_pages": 1, "max_products": 1 },
-  "stats": {
-    "category_success": 1,
-    "category_failed": 0,
-    "products_discovered": 32,
-    "product_targets": 1,
-    "product_success": 1,
-    "product_failed": 0
-  }
-}
-```
-
----
-
-## MCP Server (Claude-Code Integration)
-
-The scraper can be used as an MCP (Model Context Protocol) server, exposing two tools for Claude-Code:
-
-| Tool | Description |
-|---|---|
-| `crawl_bestseller_list` | Phase 1: Crawl category pages, discover Top 50 product links |
-| `crawl_product_details` | Phase 2: Crawl product detail pages (async concurrent) |
-
-### Setup for Claude-Code
-
-Add to `.claude/mcp.json` (project-level) or `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "amazon-scraper": {
-      "command": "python",
-      "args": ["src/mcp_server.py"],
-      "cwd": "<absolute-path-to-project-root>"
-    }
-  }
-}
-```
-
-### Phased CLI Usage
-
-The CLI now supports running individual phases:
-
-```bash
-# Phase 1 only: crawl category pages
-python raw_amazon_spider.py \
-  --category-url "https://www.amazon.com/gp/bestsellers/home-garden/3744541" \
-  --phase list
-
-# Phase 2 only: crawl product details from an existing run
-python raw_amazon_spider.py \
-  --category-url "https://www.amazon.com/gp/bestsellers/home-garden/3744541" \
-  --phase detail \
-  --run-id 20260402T032433Z \
+python product_spider.py \
+  --urls "https://www.amazon.com/dp/B0XXXXXXX" "https://www.amazon.com/dp/B0YYYYYYY" \
+  --output-dir ./workspace/3744541/products \
   --max-concurrency 3
-
-# Both phases (default, backward-compatible)
-python raw_amazon_spider.py \
-  --category-url "https://www.amazon.com/gp/bestsellers/home-garden/3744541" \
-  --phase all
 ```
 
-| New Argument | Default | Description |
-|---|---|---|
-| `--phase` | `all` | `list` (Phase 1 only), `detail` (Phase 2 only), `all` (both) |
-| `--run-id` | `None` | Existing run ID to resume (required for `--phase detail`) |
-| `--max-concurrency` | `3` | Max concurrent browser tabs for product detail crawling |
+`--force` 可强制重爬已存在的 ASIN。
 
----
+### 3. 提取 listing / A+ 图
 
-## Known Limitations
+```bash
+# 对整个 products/ 目录批量提取
+python extract_listing_images.py --root-dir ./workspace/3744541/products
+python extract_aplus.py --root-dir ./workspace/3744541/products
 
-- **No structured data extraction** — this tool only archives raw HTML. Parsing product titles, prices, ratings, etc. must be done by a separate downstream process.
-- **Amazon anti-bot blocking** — product detail pages are frequently blocked by CAPTCHA even with `StealthyFetcher`. The spider detects and flags these (`blocked: true`) but cannot bypass them. Using `--prefer-stealth`, `--solve-cloudflare`, `--proxy`, and larger `--delay-ms` values may help.
-- **Single category per run** — each invocation crawls one category URL. To scrape multiple categories, run the script multiple times.
-- **No incremental/resume** — each run starts fresh. There is no checkpoint or resume mechanism.
+# 或对单个 ASIN 目录
+python extract_listing_images.py --asin-dir ./workspace/3744541/products/B0XXXXXXX
+```
+
+`--no-download` 只提取 URL 不下载；`--force` 忽略已存在的 `urls.json`。
+
+### 4. 启动 MCP Server
+
+```bash
+python mcp_server.py
+```
+
+stdio 模式，供 Claude-Code 通过 MCP 协议连接。
+
+## 反爬特性
+
+- `StealthyFetcher` + `DynamicFetcher` 双 fetcher fallback
+- Cloudflare challenge 自动处理（`solve_cloudflare=True`）
+- Amazon "Continue shopping" captcha 自动点击绕过
+- 商品详情页自动滚动触发 A+ 懒加载模块
+- 类目列表页自动滚动以发现 Top50 全量（不只首屏 30 条）
+- 请求间隔 + 退避重试
+
+## 依赖
+
+见 `requirements.txt`：
+- `playwright` + `scrapling[fetchers]` — 浏览器驱动
+- `beautifulsoup4` + `lxml` — HTML 解析
+- `mcp` — MCP 协议
+
+## 日志与产出
+
+- `{workspace}/products/requests.jsonl` — 每次商品爬取的日志（append-only）
+- `{workspace}/categories/{browse_node_id}/rankings.jsonl` — 排名快照
+- `{workspace}/categories/{browse_node_id}/meta.json` — 类目元信息（首次发现时间、运行次数）
+- `{workspace}/products/{ASIN}/meta.json` — 单个 ASIN 的爬取元信息

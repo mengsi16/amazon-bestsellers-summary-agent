@@ -1,55 +1,47 @@
 #!/usr/bin/env python3
 """
-A+ Image Fetcher — 纯下载工具，支持两种输入模式：
-    1) 下载计划 JSON
+Image Downloader — 通用图片下载工具。
+
+支持两种输入模式：
+    1) 下载计划 JSON（download plan）
     2) 命令行直接传入 dir_name + URLs
 
 Usage:
-    python fetch_aplus_images.py --download-plan plan.json
-        python fetch_aplus_images.py --output-dir out_dir \
-            --product "001_B0XXXXX" "https://..." "https://..." \
-            --product "002_B0YYYYY" "https://..."
-
-设计原则（单一职责）：
-  - 路径解析（读 global_manifest.json、定位产品目录）→ 模型负责
-  - URL 提取（从 aplus_extracted.md / aplus.html 中提取图片 URL）→ 模型负责
-  - 图片下载（给定 URL 列表 + 输出目录，下载到本地）→ 本工具负责
+    python downloader.py --download-plan plan.json
+    python downloader.py --output-dir out_dir \\
+        --product "001_B0XXXXX" "https://..." "https://..." \\
+        --product "002_B0YYYYY" "https://..."
 
 plan.json 格式：
 {
-    "output_dir": "/absolute/path/to/aplus_images",
+    "output_dir": "/absolute/path/to/images",
     "products": [
         {
             "dir_name": "001_B0XXXXX",
-            "urls": [
-                "https://m.media-amazon.com/images/S/aplus-media/...",
-                "https://m.media-amazon.com/images/S/aplus-media/..."
-            ]
+            "urls": ["https://m.media-amazon.com/images/...jpg"]
         }
     ]
 }
-
-产出：
-  - 图片文件：{output_dir}/{dir_name}/aplus_img_001.jpg ...
-  - 下载清单：{output_dir}/download_manifest.json
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import re
+import ssl
 import sys
 import time
-import urllib.request
 import urllib.error
-import ssl
+import urllib.request
 from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Pure helpers
+# Filename helpers
 # ---------------------------------------------------------------------------
 
-def url_to_filename(url: str, index: int) -> str:
+def url_to_filename(url: str, index: int, prefix: str = "img") -> str:
     """从 URL 生成文件名。"""
     path_part = url.split("?")[0]
     if "." in path_part.split("/")[-1]:
@@ -59,11 +51,11 @@ def url_to_filename(url: str, index: int) -> str:
             ext = ".jpg"
     else:
         ext = ".jpg"
-    return f"aplus_img_{index:03d}{ext}"
+    return f"{prefix}_{index:03d}{ext}"
 
 
 # ---------------------------------------------------------------------------
-# I/O: single image download
+# Single image download
 # ---------------------------------------------------------------------------
 
 def download_image(url: str, save_path: Path, timeout: int = 30) -> bool:
@@ -95,11 +87,11 @@ def download_image(url: str, save_path: Path, timeout: int = 30) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Plan loading & validation (fail-fast)
+# Plan loading & validation
 # ---------------------------------------------------------------------------
 
 def load_download_plan(plan_path: Path) -> dict:
-    """读取并校验下载计划 JSON，校验失败立即抛异常（fail-fast）。"""
+    """读取并校验下载计划 JSON。"""
     if not plan_path.exists():
         raise FileNotFoundError(f"Plan file not found: {plan_path}")
 
@@ -112,13 +104,9 @@ def load_download_plan(plan_path: Path) -> dict:
 
     for i, prod in enumerate(plan["products"]):
         if "dir_name" not in prod or not prod["dir_name"]:
-            raise ValueError(
-                f"Product #{i} missing required field: 'dir_name'"
-            )
+            raise ValueError(f"Product #{i} missing required field: 'dir_name'")
         if "urls" not in prod:
-            raise ValueError(
-                f"Product #{i} (dir_name={prod.get('dir_name','?')}) missing required field: 'urls'"
-            )
+            raise ValueError(f"Product #{i} missing required field: 'urls'")
 
     return plan
 
@@ -141,25 +129,27 @@ def build_plan_from_cli(output_dir: str, product_args: list[list[str]]) -> dict:
             "urls": row[1:],
         })
 
-    plan = {
-        "output_dir": output_dir,
-        "products": products,
-    }
-    return plan
+    return {"output_dir": output_dir, "products": products}
 
 
 # ---------------------------------------------------------------------------
 # Core execution
 # ---------------------------------------------------------------------------
 
-def execute_download_plan(plan: dict) -> dict:
+def execute_download_plan(
+    plan: dict,
+    file_prefix: str = "img",
+    delay_between: float = 0.3,
+) -> dict:
     """执行下载计划，返回并持久化 download_manifest。
 
     Args:
-        plan: 已校验的下载计划 dict（来自 load_download_plan）。
+        plan: 已校验的下载计划 dict。
+        file_prefix: 图片文件名前缀（如 "listing_img" / "aplus_img"）。
+        delay_between: 同一产品内图片下载间隔（秒）。
 
     Returns:
-        download_manifest dict（同时写入 {output_dir}/download_manifest.json）。
+        download_manifest dict。
     """
     output_dir = Path(plan["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -189,7 +179,7 @@ def execute_download_plan(plan: dict) -> dict:
         success_count = 0
 
         for img_idx, url in enumerate(urls, start=1):
-            filename = url_to_filename(url, img_idx)
+            filename = url_to_filename(url, img_idx, prefix=file_prefix)
             save_path = product_output / filename
             print(f"    [{img_idx}/{len(urls)}] {filename}")
 
@@ -205,7 +195,7 @@ def execute_download_plan(plan: dict) -> dict:
                 success_count += 1
 
             if img_idx < len(urls):
-                time.sleep(0.3)
+                time.sleep(delay_between)
 
         if success_count == len(urls):
             status = "SUCCESS"
@@ -222,10 +212,12 @@ def execute_download_plan(plan: dict) -> dict:
             "images": images_info,
         })
 
-    manifest = build_download_manifest(
-        output_dir=str(output_dir),
-        products_results=products_results,
-    )
+    manifest = {
+        "output_dir": str(output_dir),
+        "total_images": sum(r["image_count"] for r in products_results),
+        "total_success": sum(r.get("success_count", 0) for r in products_results),
+        "products": products_results,
+    }
 
     manifest_path = output_dir / "download_manifest.json"
     manifest_path.write_text(
@@ -243,35 +235,19 @@ def execute_download_plan(plan: dict) -> dict:
     return manifest
 
 
-def build_download_manifest(
-    output_dir: str,
-    products_results: list[dict],
-) -> dict:
-    """构造 download_manifest 结构体。"""
-    return {
-        "output_dir": output_dir,
-        "total_images": sum(r["image_count"] for r in products_results),
-        "total_success": sum(r.get("success_count", 0) for r in products_results),
-        "products": products_results,
-    }
-
-
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI
 # ---------------------------------------------------------------------------
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description=(
-            "A+ Image Fetcher — 纯下载工具。"
-            "支持下载计划（JSON）或命令行直接 URL 输入。"
-        )
+        description="Image Downloader — 通用图片下载工具",
     )
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument(
         "--download-plan",
         type=Path,
-        help="Path to the download plan JSON file (created by the model)",
+        help="Path to the download plan JSON file",
     )
     input_group.add_argument(
         "--output-dir",
@@ -283,10 +259,12 @@ def main():
         action="append",
         nargs="+",
         metavar="ITEM",
-        help=(
-            "Direct mode: --product <dir_name> <url1> [url2 ...]. "
-            "Can be repeated."
-        ),
+        help="Direct mode: --product <dir_name> <url1> [url2 ...]. Repeatable.",
+    )
+    parser.add_argument(
+        "--file-prefix",
+        default="img",
+        help="Filename prefix for downloaded images (default: img)",
     )
     args = parser.parse_args()
 
@@ -309,7 +287,7 @@ def main():
             print(f"Error: Invalid CLI input — {e}", file=sys.stderr)
             sys.exit(3)
 
-    execute_download_plan(plan)
+    execute_download_plan(plan, file_prefix=args.file_prefix)
 
 
 if __name__ == "__main__":

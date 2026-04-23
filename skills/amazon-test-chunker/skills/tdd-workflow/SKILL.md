@@ -21,8 +21,8 @@ type: skill
 
 ```
 1. Smoke Fixture 选取：
-   a. 从 raw HTML 目录中手动指定 3–4 个代表性文件（包括不同类别 / 不同结构的产品）
-   b. 运行 `python chunker/batch_run.py --raw-dir <raw_dir> --out-dir chunks/ --limit 4`
+   a. 从 `products/{ASIN}/product.html` 中手动指定 3–4 个代表性 ASIN（优先 Top1/Top25）
+   b. 运行 `python -m chunker.batch_run --products-dir <products_dir> --rankings-jsonl <rankings_jsonl> --out-dir chunks/ --limit 4`
       确认能正常分块生成 chunks
    c. 这 3–4 个产品的 chunk 目录就是后续所有提取器测试的固定 fixture
 

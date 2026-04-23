@@ -2,7 +2,7 @@
 
 # Amazon-Bestsellers-Summary
 
-*One-click analysis of Amazon Bestsellers Top50 categories with three-dimensional market insights.*
+*One-click analysis of Amazon Bestsellers Top50 categories with four-dimensional market insights.*
 
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blue)](https://code.claude.com/claude-code)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -35,13 +35,13 @@ Are you struggling with these analysis challenges?
 | Large and messy user review data | Unable to extract valuable user insights |
 | Scattered A+ content materials | Hard to summarize competitor content strategies |
 
-**Amazon-Bestsellers-Summary** provides a fully automated solution: from crawling → chunking → three-dimensional analysis → summary report, all in one command.
+**Amazon-Bestsellers-Summary** provides a fully automated solution: from crawling → chunking → four-dimensional analysis → summary report, all in one command.
 
 ---
 
 ## Core Features
 
-### Three-Dimensional Analysis System
+### Four-Dimensional Analysis System
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -108,10 +108,14 @@ amazon-bestsellers-summary/
 │   ├── amazon-bestsellers-marketplace-dim/  # Marketplace dimension skills
 │   ├── amazon-bestsellers-reviews-dim/      # Reviews dimension skills
 │   └── amazon-bestsellers-fine-grained-dim/ # Fine-grained dimension skills
-├── scraper/                 # MCP Server
-│   ├── mcp_server.py        # MCP service entry
-│   ├── raw_amazon_spider.py # Spider implementation
-│   └── requirements.txt     # Python dependencies
+├── scraper/                 # MCP Server + crawlers
+│   ├── mcp_server.py                   # MCP service entry (4 tools)
+│   ├── category_spider.py              # Bestsellers category list crawler
+│   ├── product_spider.py               # Product detail crawler (ASIN-deduped)
+│   ├── extract_listing_images.py       # Listing image extractor
+│   ├── extract_aplus.py                # A+ content + image extractor
+│   ├── downloader.py                   # Generic image downloader
+│   └── requirements.txt                # Python dependencies
 └── README.md
 ```
 
