@@ -58,32 +58,36 @@ def url_to_filename(url: str, index: int, prefix: str = "img") -> str:
 # Single image download
 # ---------------------------------------------------------------------------
 
-def download_image(url: str, save_path: Path, timeout: int = 30) -> bool:
+def download_image(url: str, save_path: Path, timeout: int = 30, retries: int = 2) -> bool:
     """下载单张图片，返回是否成功。"""
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    for attempt in range(retries + 1):
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
 
-        req = urllib.request.Request(url, headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
-            "Referer": "https://www.amazon.com/",
-        })
+            req = urllib.request.Request(url, headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                "Referer": "https://www.amazon.com/",
+            })
 
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            data = resp.read()
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            save_path.write_bytes(data)
-            return True
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                data = resp.read()
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                save_path.write_bytes(data)
+                return True
 
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        print(f"  [FAIL] {url} -> {e}", file=sys.stderr)
-        return False
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, ssl.SSLError) as e:
+            if attempt < retries:
+                time.sleep(1.0)
+                continue
+            print(f"  [FAIL] {url} -> {e}", file=sys.stderr)
+            return False
 
 
 # ---------------------------------------------------------------------------

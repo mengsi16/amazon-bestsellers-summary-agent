@@ -61,14 +61,22 @@ class AplusContent:
 # A+ Content extraction
 # ---------------------------------------------------------------------------
 
-# Match legacy ``module-N`` as well as modern premium/brand-story variants like:
-#   premium-module-5-comparison-table-scroller
+# Structural classes that are NOT module type identifiers.
+_STRUCTURAL_CLASSES = frozenset({
+    "celwidget", "aplus-module", "aplus-standard", "aplus-brand-story-hero",
+    "aplus-brand-story-card", "aplus-3p-fixed-width",
+})
+
+# Match any class that looks like a module type identifier:
+#   module-5-comparison-table-scroller
 #   premium-module-8-hero-video
 #   brand-story-hero-1-image-logo
-#   brand-story-background-image-text-block
+#   3p-module-b / 3p-module-c
+#   np-module-x  (any future prefix)
 MODULE_CLASS_RE = re.compile(
     r"^(?:premium-)?module-(\d+)(?:-([a-z0-9-]+))?$"
-    r"|^(brand-story)-([a-z0-9-]+)$",
+    r"|^(brand-story)-([a-z0-9-]+)$"
+    r"|^([a-z0-9]+)-module-([a-z0-9-]+)$",
     re.IGNORECASE,
 )
 AMAZON_IMG_URL_RE = re.compile(r"https?://m\.media-amazon\.com/images/[^\s\"')\]]+", re.IGNORECASE)
@@ -82,17 +90,33 @@ APLUS_SELECTORS = [
 ]
 
 
-def _find_aplus_container(soup: BeautifulSoup) -> Tag | None:
-    """定位 A+ 内容容器。"""
+def _find_aplus_containers(soup: BeautifulSoup) -> list[Tag]:
+    """定位所有 A+ 内容容器（Brand Story + Premium A+ 可能分属不同 div）。"""
+    containers: list[Tag] = []
+    seen_ids: set[str] = set()
     for selector in APLUS_SELECTORS:
-        container = soup.select_one(selector)
-        if container:
-            return container
-    return None
+        for el in soup.select(selector):
+            # Deduplicate by id or object identity
+            el_id = el.get("id", "") or str(id(el))
+            if el_id in seen_ids:
+                continue
+            seen_ids.add(el_id)
+            containers.append(el)
+    return containers
 
 
 def _extract_module_type(element: Tag) -> str:
-    """从元素 class 中提取模块类型（兼容 legacy / premium / brand-story）。"""
+    """从元素 class 中提取模块类型（兼容 legacy / premium / brand-story / Xp-module）。
+
+    返回示例：
+    - ``module-5-comparison-table-scroller`` (premium)
+    - ``module-8-hero-video`` (premium)
+    - ``brand-story-hero-1-image-logo``
+    - ``3p-module-b`` (third-party)
+    - ``np-module-x`` (any future prefix)
+    - ``module-2`` (legacy)
+    - ``module-unknown`` (未匹配)
+    """
     classes = element.get("class", [])
     if isinstance(classes, str):
         classes = classes.split()
@@ -100,11 +124,13 @@ def _extract_module_type(element: Tag) -> str:
         match = MODULE_CLASS_RE.match(cls)
         if not match:
             continue
-        number, descriptor, brand_prefix, brand_descriptor = match.groups()
+        number, descriptor, brand_prefix, brand_descriptor, xp_prefix, xp_descriptor = match.groups()
         if number:
             return f"module-{number}" + (f"-{descriptor}" if descriptor else "")
         if brand_prefix:
             return f"{brand_prefix}-{brand_descriptor}"
+        if xp_prefix:
+            return f"{xp_prefix}-module-{xp_descriptor}"
     return "module-unknown"
 
 
@@ -134,9 +160,9 @@ def _extract_images_from_module(module_el: Tag) -> list[dict[str, str]]:
         src = img.get("data-src") or img.get("src", "")
         if not src or "amazon.com/images" not in src:
             continue
-        # Clean URL - remove size modifiers
-        src = re.sub(r"\._[A-Z]+[\d,]*_", ".", src)
-        src = re.sub(r"\.(\.\w+)$", r"\1", src)
+        # Clean URL - remove size modifiers (only legacy ._AC_ format)
+        src = re.sub(r"\._[A-Z]+[\d,]*_", ".", src)          # ._AC_SX300_
+        src = re.sub(r"\.([.]\w+)$", r"\1", src)
 
         if src in seen:
             continue
@@ -226,22 +252,28 @@ def _extract_brand_story(container: Tag) -> str:
 
 
 def extract_aplus_content(html: str) -> AplusContent:
-    """从商品 HTML 中提取 A+ 海报页面内容。"""
-    soup = BeautifulSoup(html, "lxml")
-    container = _find_aplus_container(soup)
+    """从商品 HTML 中提取 A+ 海报页面内容。
 
-    if not container:
+    Returns:
+        AplusContent 包含模块列表、图片 URL、品牌故事等。
+    """
+    soup = BeautifulSoup(html, "lxml")
+    containers = _find_aplus_containers(soup)
+
+    if not containers:
         return AplusContent(has_aplus=False)
 
     modules: list[AplusModule] = []
     all_image_urls: list[str] = []
     seen_urls: set[str] = set()
 
-    # Find all A+ modules
-    module_elements = container.select(".aplus-module")
-    if not module_elements:
-        # Fallback: try broader selector
-        module_elements = container.select("[class*='module-']")
+    # Collect A+ modules from ALL containers (Brand Story + Premium A+)
+    module_elements: list[Tag] = []
+    for container in containers:
+        found = container.select(".aplus-module")
+        if not found:
+            found = container.select("[class*='module-']")
+        module_elements.extend(found)
 
     for idx, module_el in enumerate(module_elements):
         module_type = _extract_module_type(module_el)
@@ -274,8 +306,8 @@ def extract_aplus_content(html: str) -> AplusContent:
                 seen_urls.add(img["src"])
                 all_image_urls.append(img["src"])
 
-    # Extract brand story
-    brand_story = _extract_brand_story(container)
+    # Extract brand story (from first container — brand story section)
+    brand_story = _extract_brand_story(containers[0]) if containers else ""
 
     return AplusContent(
         has_aplus=True,
@@ -459,9 +491,10 @@ def process_asin(
 
     # Save the raw A+ section HTML if present.
     soup = BeautifulSoup(html, "lxml")
-    container = _find_aplus_container(soup)
-    if container:
-        aplus_html_path.write_text(str(container), encoding="utf-8")
+    aplus_containers = _find_aplus_containers(soup)
+    if aplus_containers:
+        combined_html = "\n".join(str(c) for c in aplus_containers)
+        aplus_html_path.write_text(combined_html, encoding="utf-8")
         urls_data["aplus_html_file"] = str(aplus_html_path)
 
     if download and content.all_image_urls:
