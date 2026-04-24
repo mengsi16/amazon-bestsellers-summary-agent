@@ -157,22 +157,60 @@ amazon-bestsellers-summary/
 
 ---
 
-## Installation & Usage
+## Installation
 
-### Method: Launch Orchestrator as Main Session (Supports Multi-Agent Orchestration)
+### Prerequisites
 
-> **Important**: Claude Code subagents cannot nest and spawn other subagents. To allow the orchestrator to dispatch child agents (chunker + four analysts), it must be launched as a **main session**:
+- **Claude Code CLI** >= 1.0.0 ([Install guide](https://code.claude.com/cli))
+- **Python** >= 3.10
+
+### One-command setup
+
+**Windows:**
+```bat
+setup.bat
+```
+
+**macOS / Linux:**
+```bash
+bash setup.sh
+```
+
+The setup script automatically: ① `pip install` Python dependencies; ② `playwright install chromium` for the crawler browser.
+
+---
+
+## Usage
+
+### Method 1: One-liner CLI (Recommended)
+
+```bash
+python run.py https://www.amazon.com/gp/bestsellers/beauty/11058221/
+```
+
+Optional arguments:
+
+| Argument | Description |
+|----------|-------------|
+| `--model MODEL` | Override Claude model (e.g. `claude-opus-4-5`). Defaults to the model set in the orchestrator agent. |
+| `--plugin-dir DIR` | Manually specify plugin root directory. Defaults to the directory containing `run.py`. |
+
+> ⚠️ You must provide a **full Bestsellers URL** (including category name), e.g. `https://www.amazon.com/gp/bestsellers/beauty/11058221/`. The number at the tail of the URL is the Browse Node ID (codied), used as the workspace directory name. The run takes **30–90 minutes** — the pipeline executes fully automatically until `summary.md` is written.
+
+The plugin will automatically:
+1. Call MCP Server to crawl Top50 product data
+2. Spawn chunker agent to generate golden samples and perform chunking & extraction
+3. Spawn audit agent to verify chunks completeness; re-spawn chunker if gaps are found
+4. Parallel spawn four analyst agents for dimensional analysis
+5. Generate consolidated summary report
+
+### Method 2: Interactive Mode (Advanced)
+
+> Use this when you need to interact manually within the same Claude Code session:
 
 ```bash
 claude --plugin-dir /your/path/to/amazon-bestsellers-summary-agent --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
 ```
-
-Parameter explanation:
-- `--plugin-dir` → Points to the plugin root directory (the directory containing `.claude-plugin/plugin.json`)
-- `--agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator` → Format is `plugin-name:agent-name`, where plugin-name comes from the `name` field in `plugin.json`
-- `--dangerously-skip-permissions` → Skips permission checks, allowing the main session to call all tools (! Required, otherwise Agents will not be created to work)
-
-### Usage Example
 
 After startup, enter the Amazon Bestsellers category URL in Claude Code:
 
@@ -181,14 +219,10 @@ Analyze the Bestsellers Top50 for this category:
 https://www.amazon.com/gp/bestsellers/fashion/1040658/
 ```
 
-> ⚠️ You must provide a **full Bestsellers URL** (including category name), not a bare numeric ID or a human-readable category name. Amazon does not accept numeric-only URLs; the URL must include the category slug (e.g. `beauty`, `fashion`), such as `https://www.amazon.com/gp/bestsellers/beauty/11058221/`. The number at the tail of the URL is the Browse Node ID (codied), which will be used as `category_slug` and the workspace directory name.
-
-The plugin will automatically:
-1. Call MCP Server to crawl Top50 product data
-2. Spawn chunker agent to generate golden samples and perform chunking & extraction
-3. Spawn audit agent to verify chunks completeness; re-spawn chunker if gaps are found
-4. Parallel spawn four analyst agents for dimensional analysis
-5. Generate consolidated summary report
+Parameter explanation:
+- `--plugin-dir` → Points to the plugin root directory (the directory containing `.claude-plugin/plugin.json`)
+- `--agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator` → Format is `plugin-name:agent-name`, where plugin-name comes from the `name` field in `plugin.json`
+- `--dangerously-skip-permissions` → Skips permission checks, allowing the main session to call all tools (required, otherwise Agents will not be created to work)
 
 ---
 
@@ -260,9 +294,9 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 
 ## Requirements
 
-- **Claude Code** >= 1.0.0
+- **Claude Code CLI** >= 1.0.0
 - **Python** >= 3.10
-- **Playwright** (for crawler)
+- **Playwright** (for crawler, installed automatically by `setup.bat` / `setup.sh`)
 
 ---
 

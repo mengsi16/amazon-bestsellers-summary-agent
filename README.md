@@ -157,22 +157,60 @@ amazon-bestsellers-summary/
 
 ---
 
-## 安装与使用
+## 安装
 
-### 方式：作为主会话启动 Orchestrator（支持多 Agent 调度）
+### 前置要求
 
-> **重要**：Claude Code 的 subagent 无法嵌套 spawn 其他 subagent。要让 orchestrator 调度子 agent（chunker + 四个 analyst），必须将其作为**主会话**启动：
+- **Claude Code CLI** >= 1.0.0（[安装说明](https://code.claude.com/cli)）
+- **Python** >= 3.10
+
+### 一键安装依赖
+
+**Windows：**
+```bat
+setup.bat
+```
+
+**macOS / Linux：**
+```bash
+bash setup.sh
+```
+
+安装脚本会自动完成：① `pip install` Python 依赖；② `playwright install chromium` 安装爬虫浏览器。
+
+---
+
+## 使用
+
+### 方式一：命令行一键运行（推荐）
+
+```bash
+python run.py https://www.amazon.com/gp/bestsellers/beauty/11058221/
+```
+
+可选参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--model MODEL` | 指定 Claude 模型（如 `claude-opus-4-5`），默认由 agent 定义决定 |
+| `--plugin-dir DIR` | 手动指定插件根目录，默认自动检测为 `run.py` 所在目录 |
+
+> ⚠️ 必须提供 **完整的 Bestsellers URL**（含类目名），例如 `https://www.amazon.com/gp/bestsellers/beauty/11058221/`。URL 尾部的数字是 Browse Node ID (codied)，会被作为 workspace 目录名。运行过程约需 **30–90 分钟**，请耐心等待，流水线将自动完整执行至输出 `summary.md`。
+
+插件将自动：
+1. 调用 MCP Server 爬取 Top50 产品数据
+2. Spawn chunker agent 生成黄金样本并进行分块提取
+3. Spawn audit agent 审查 chunks 完整性；若缺漏则重启 chunker 补跑
+4. 并行 Spawn 四个 analyst agent 进行维度分析
+5. 汇总生成 summary 报告
+
+### 方式二：交互模式（高级）
+
+> 需要在同一 Claude Code 会话中手动交互时使用：
 
 ```bash
 claude --plugin-dir /your/path/to/amazon-bestsellers-summary-agent --agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator --dangerously-skip-permissions
 ```
-
-参数说明：
-- `--plugin-dir` → 指向插件根目录（包含 `.claude-plugin/plugin.json` 的目录）
-- `--agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator` → 格式为 `plugin-name:agent-name`，plugin-name 来自 `plugin.json` 中的 `name` 字段
-- `--dangerously-skip-permissions` → 跳过权限检查，允许主会话调用所有工具（！必须要有，否则不会创建Agent进行工作）
-
-### 使用示例
 
 启动后，在 Claude Code 中输入 Amazon Bestsellers 类目 URL：
 
@@ -181,14 +219,10 @@ claude --plugin-dir /your/path/to/amazon-bestsellers-summary-agent --agent amazo
 https://www.amazon.com/gp/bestsellers/fashion/1040658/
 ```
 
-> ⚠️ 必须提供 **完整的 Bestsellers URL**（含类目名），而不是纯数字 ID 或类目名称。Amazon 不接受纯数字 ID 的 URL，URL 中必须包含类目名（如 `beauty`、`fashion`），例如 `https://www.amazon.com/gp/bestsellers/beauty/11058221/`。URL 尾部的数字就是 Browse Node ID (codied)，会被作为 `category_slug` 和 workspace 目录名。
-
-插件将自动：
-1. 调用 MCP Server 爬取 Top50 产品数据
-2. Spawn chunker agent 生成黄金样本并进行分块提取
-3. Spawn audit agent 审查 chunks 完整性；若缺漏则重启 chunker 补跑
-4. 并行 Spawn 四个 analyst agent 进行维度分析
-5. 汇总生成 summary 报告
+参数说明：
+- `--plugin-dir` → 指向插件根目录（包含 `.claude-plugin/plugin.json` 的目录）
+- `--agent amazon-bestsellers-summary:amazon-bestsellers-orchestrator` → 格式为 `plugin-name:agent-name`，plugin-name 来自 `plugin.json` 中的 `name` 字段
+- `--dangerously-skip-permissions` → 跳过权限检查，允许主会话调用所有工具（必须要有，否则不会创建 Agent 进行工作）
 
 ---
 
@@ -260,9 +294,9 @@ workspace/1040658/                                ← {browse_node_id} (codied)
 
 ## 依赖要求
 
-- **Claude Code** >= 1.0.0
+- **Claude Code CLI** >= 1.0.0
 - **Python** >= 3.10
-- **Playwright** (用于爬虫)
+- **Playwright** (用于爬虫，由 `setup.bat` / `setup.sh` 自动安装)
 
 ---
 

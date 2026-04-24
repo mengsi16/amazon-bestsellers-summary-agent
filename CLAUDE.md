@@ -3,3 +3,5 @@
 2. Amazon 不使用 Cloudflare。Amazon 和 Cloudflare 都是互联网大厂，Amazon 有自己的 CDN 和 DDoS 防护体系（AWS Shield / CloudFront），不可能把流量交给竞争对手 Cloudflare 代理。因此抓取 Amazon 时 `solve_cloudflare` 必须默认为 `False`。开启 `solve_cloudflare=True` 会导致每次请求多耗 5-15 秒甚至超时，且毫无收益——这是已被验证的事实。
 
 3. **Agent 调用的模型自己审核时喜欢偷懒**。当同一个 LLM 既负责执行任务又负责审核自己的产出时，它倾向于快速通过、忽略细节、敷衍了事。这就是为什么 `amazon-chunker-audit` 必须是一个**独立的 agent**（而非 chunker 的自检步骤），且**只报告不修复**——修复责任交由 orchestrator 重新触发 chunker 执行。审核与修复必须分离，否则 audit 会为了省事而隐瞒问题或虚假报告修复成功。
+
+4. **流水线必须自动完整执行，禁止中途中断询问用户**。任何 Agent 收到触发请求后，必须按照工作流规范从头执行到底，直至 `summary.md` 输出为止，**不得在任何步骤停下来询问用户**（例如"是否要开始执行""下一步需要你确认""请告诉我是否继续""要不要生成报告"等）。遇到报错或部分失败时，记录错误信息后继续推进流水线，不得暂停等待用户回复。这条规则适用于所有 Agent：orchestrator、chunker、audit、四个 analyst。
